@@ -1,6 +1,6 @@
 """
-Squad 4x Assistant Bot – Answers questions addressed to the channel owner
-- Listens for messages that mention @AdminUsername or reply to Admin ID
+Squad 4x Assistant Bot – Answers /ask commands only
+- Responds to /ask <question> in groups or private
 - Shows typing animation, then replies via Gemini
 - Never reveals "Gemini", only "Squad 4x Assistant"
 """
@@ -22,13 +22,12 @@ log = logging.getLogger(__name__)
 API_ID = int(os.environ["API_ID"])
 API_HASH = os.environ["API_HASH"]
 BOT_TOKEN = os.environ["BOT_TOKEN"]
-GROUP_ID = int(os.environ["GROUP_ID"])               # The group where bot listens
-ADMIN_ID = int(os.environ["ADMIN_ID"])               # Channel owner's user ID
-ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME", "").lstrip("@")  # e.g., "Squad4xAdmin"
+GROUP_ID = int(os.environ["GROUP_ID"])               # The group where bot listens (optional, can be None)
 GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
 
-# Optional: keywords that indicate a question (if not mention/reply)
-QUESTION_KEYWORDS = ["what", "how", "why", "when", "where", "who", "can you", "please explain", "tell me", "ምን", "እንዴት", "ለምን", "መቼ", "እባክህ"]
+# Optional: allow the bot to answer in private chats as well (no need GROUP_ID)
+# Set ALLOW_PRIVATE = True to enable
+ALLOW_PRIVATE = os.environ.get("ALLOW_PRIVATE", "false").lower() == "true"
 
 # ========== GEMINI SETUP ==========
 # Support multiple keys (comma-separated) for rotation
@@ -80,61 +79,48 @@ async def ask_gemini(question: str) -> str:
             log.warning(f"Gemini error: {e}")
             return "Sorry, I encountered an error while processing your request."
 
-# ========== GROUP MESSAGE HANDLER ==========
-@bot.on(events.NewMessage(chats=GROUP_ID))
-async def handler(event):
+# ========== COMMAND HANDLER ==========
+@bot.on(events.NewMessage)
+async def ask_command_handler(event):
     # Ignore messages from the bot itself
     if event.out:
         return
 
-    sender = await event.get_sender()
-    if sender is None:
-        return
+    # Check if the message is in the allowed chat
+    is_group = event.is_group
+    is_private = event.is_private
 
-    # Ignore messages from the admin himself (no self‑reply)
-    if sender.id == ADMIN_ID:
+    if is_group:
+        # If GROUP_ID is set, only respond in that specific group
+        if GROUP_ID and event.chat_id != GROUP_ID:
+            return
+    elif is_private:
+        if not ALLOW_PRIVATE:
+            return
+    else:
         return
 
     text = event.raw_text or ""
     if not text:
         return
 
-    # 1. Check if message is a reply to admin
-    is_reply_to_admin = False
-    if event.is_reply:
-        try:
-            reply_msg = await event.get_reply_message()
-            if reply_msg and reply_msg.sender_id == ADMIN_ID:
-                is_reply_to_admin = True
-        except Exception:
-            pass
-
-    # 2. Check if message mentions admin's username
-    mentions_admin = ADMIN_USERNAME and f"@{ADMIN_USERNAME}" in text
-
-    # 3. Check for keywords like "admin", "owner" (common in groups)
-    admin_keywords = re.search(r'\b(admin|owner|ሰላጤ|ባለቤት)\b', text, re.IGNORECASE)
-
-    # 4. Optional: if no direct address but contains question keywords and is long enough
-    has_question_keywords = any(kw in text.lower() for kw in QUESTION_KEYWORDS)
-    is_long_enough = len(text.split()) >= 4
-
-    # Decide: respond only if clearly addressed to admin
-    is_addressed = is_reply_to_admin or mentions_admin or admin_keywords
-    # If you want to also catch questions that might be intended for admin but not directly addressed,
-    # uncomment the line below (be careful: may cause false positives)
-    # if not is_addressed and has_question_keywords and is_long_enough:
-    #     is_addressed = True
-
-    if not is_addressed:
+    # Check for /ask command (case-insensitive, can have bot mention)
+    # Pattern: /ask@BotName question or /ask question
+    match = re.match(r'^/ask(?:@\w+)?\s+(.+)', text, re.IGNORECASE)
+    if not match:
         return
 
-    log.info(f"📨 Question for admin from {sender.first_name} (@{sender.username or 'no username'}): {text[:100]}")
+    question = match.group(1).strip()
+    if not question:
+        await event.reply("Please provide a question. Example: `/ask What is a broker?`")
+        return
+
+    log.info(f"📨 /ask command from {event.sender_id}: {question[:100]}")
 
     # Show typing animation
     async with bot.action(event.chat_id, SendMessageTypingAction()):
         await asyncio.sleep(2)   # Simulate thinking/typing
-        answer = await ask_gemini(text)
+        answer = await ask_gemini(question)
 
     # Format answer professionally
     reply_text = f"🤖 *Squad 4x Assistant*:\n\n{answer}"
@@ -142,15 +128,31 @@ async def handler(event):
     # Send the reply
     await event.reply(reply_text, parse_mode="markdown")
 
-    log.info(f"✅ Replied to question from {sender.id}")
+    log.info(f"✅ Replied to /ask from {event.sender_id}")
+
+# ========== START COMMAND (optional) ==========
+@bot.on(events.NewMessage(pattern='/start'))
+async def start_cmd(event):
+    if event.out:
+        return
+    await event.reply(
+        "🤖 *Squad 4x Assistant Bot*\n\n"
+        "I answer your questions using AI. Simply use:\n"
+        "`/ask <your question>`\n\n"
+        "Example: `/ask What is a Forex broker?`\n\n"
+        "I never reveal my AI provider – I'm just your group assistant.",
+        parse_mode="markdown"
+    )
 
 # ========== MAIN ==========
 async def main():
     await bot.start(bot_token=BOT_TOKEN)
     me = await bot.get_me()
     log.info(f"🤖 Assistant Bot started: @{me.username}")
-    log.info(f"Listening to group ID: {GROUP_ID}")
-    log.info(f"Admin ID: {ADMIN_ID} | Admin username: @{ADMIN_USERNAME}")
+    if GROUP_ID:
+        log.info(f"Listening to group ID: {GROUP_ID}")
+    if ALLOW_PRIVATE:
+        log.info("Also listening to private chats")
     await bot.run_until_disconnected()
 
 if __name__ == "__main__":
