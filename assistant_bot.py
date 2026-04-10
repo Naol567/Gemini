@@ -1,8 +1,8 @@
 """
-Squad 4x Assistant Bot – Answers /ask commands only
-- Responds to /ask <question> in groups or private
-- Shows typing animation, then replies via Gemini
-- Never reveals "Gemini", only "Squad 4x Assistant"
+Squad 4x Assistant Bot – Responds to /ask <question> only
+- Works in groups and private chats
+- Shows typing animation, replies via Gemini
+- Never mentions "Gemini"
 """
 
 import os
@@ -14,23 +14,20 @@ from telethon import TelegramClient, events
 from telethon.tl.types import SendMessageTypingAction
 import google.generativeai as genai
 
-# ========== LOGGING ==========
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
 
-# ========== ENVIRONMENT VARIABLES ==========
+# ========== ENV ==========
 API_ID = int(os.environ["API_ID"])
 API_HASH = os.environ["API_HASH"]
 BOT_TOKEN = os.environ["BOT_TOKEN"]
-GROUP_ID = int(os.environ["GROUP_ID"])               # The group where bot listens (optional, can be None)
+GROUP_ID = os.environ.get("GROUP_ID")
+if GROUP_ID:
+    GROUP_ID = int(GROUP_ID)
 GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
-
-# Optional: allow the bot to answer in private chats as well (no need GROUP_ID)
-# Set ALLOW_PRIVATE = True to enable
 ALLOW_PRIVATE = os.environ.get("ALLOW_PRIVATE", "false").lower() == "true"
 
-# ========== GEMINI SETUP ==========
-# Support multiple keys (comma-separated) for rotation
+# ========== GEMINI ==========
 _keys = [k.strip() for k in GEMINI_API_KEY.split(",") if k.strip()]
 _current_key_index = 0
 _quota_exhausted = False
@@ -50,15 +47,10 @@ def rotate_key():
     log.info("🔄 Switched to Gemini key #%s", _current_key_index+1)
     return True
 
-# ========== TELEGRAM CLIENT ==========
-bot = TelegramClient("assistant_bot", API_ID, API_HASH)
-
-# ========== HELPER: ASK GEMINI ==========
 async def ask_gemini(question: str) -> str:
-    """Send question to Gemini, return answer or error message."""
     global _quota_exhausted
     if _quota_exhausted:
-        return "I'm sorry, the assistant service is temporarily unavailable. Please try again later."
+        return "Assistant service temporarily unavailable. Try again later."
 
     tried = 0
     total = len(_keys)
@@ -66,81 +58,67 @@ async def ask_gemini(question: str) -> str:
         try:
             model = get_gemini_model()
             response = await asyncio.to_thread(model.generate_content, question)
-            answer = response.text.strip()
-            return answer
+            return response.text.strip()
         except Exception as e:
             err = str(e)
             if "429" in err or "quota" in err.lower() or "RESOURCE_EXHAUSTED" in err:
                 tried += 1
                 if not rotate_key():
                     _quota_exhausted = True
-                    return "Assistant offline. Please contact group admin."
+                    return "Assistant offline. Contact admin."
                 continue
-            log.warning(f"Gemini error: {e}")
-            return "Sorry, I encountered an error while processing your request."
+            log.error(f"Gemini error: {e}")
+            return "Sorry, an error occurred."
 
-# ========== COMMAND HANDLER ==========
+# ========== BOT CLIENT ==========
+bot = TelegramClient("assistant_bot", API_ID, API_HASH)
+
+# ========== /ASK HANDLER ==========
 @bot.on(events.NewMessage)
-async def ask_command_handler(event):
-    # Ignore messages from the bot itself
+async def ask_handler(event):
     if event.out:
         return
 
-    # Check if the message is in the allowed chat
-    is_group = event.is_group
-    is_private = event.is_private
+    # Log every message for debugging
+    log.info(f"Received message from {event.sender_id} in chat {event.chat_id}: {event.raw_text}")
 
-    if is_group:
-        # If GROUP_ID is set, only respond in that specific group
+    # Check if it's a group or private
+    if event.is_group:
         if GROUP_ID and event.chat_id != GROUP_ID:
+            log.info(f"Ignoring group {event.chat_id}, not my target group")
             return
-    elif is_private:
+    elif event.is_private:
         if not ALLOW_PRIVATE:
+            log.info("Private messages not allowed (ALLOW_PRIVATE=false)")
             return
     else:
         return
 
     text = event.raw_text or ""
-    if not text:
-        return
-
-    # Check for /ask command (case-insensitive, can have bot mention)
-    # Pattern: /ask@BotName question or /ask question
+    # Match /ask or /ask@BotName followed by a space and some text
     match = re.match(r'^/ask(?:@\w+)?\s+(.+)', text, re.IGNORECASE)
     if not match:
         return
 
     question = match.group(1).strip()
-    if not question:
-        await event.reply("Please provide a question. Example: `/ask What is a broker?`")
-        return
+    log.info(f"✅ /ask command detected. Question: {question[:100]}")
 
-    log.info(f"📨 /ask command from {event.sender_id}: {question[:100]}")
-
-    # Show typing animation
+    # Typing animation
     async with bot.action(event.chat_id, SendMessageTypingAction()):
-        await asyncio.sleep(2)   # Simulate thinking/typing
+        await asyncio.sleep(2)
         answer = await ask_gemini(question)
 
-    # Format answer professionally
-    reply_text = f"🤖 *Squad 4x Assistant*:\n\n{answer}"
+    reply = f"🤖 *Squad 4x Assistant*:\n\n{answer}"
+    await event.reply(reply, parse_mode="markdown")
+    log.info("Reply sent.")
 
-    # Send the reply
-    await event.reply(reply_text, parse_mode="markdown")
-
-    log.info(f"✅ Replied to /ask from {event.sender_id}")
-
-# ========== START COMMAND (optional) ==========
+# ========== /START ==========
 @bot.on(events.NewMessage(pattern='/start'))
 async def start_cmd(event):
-    if event.out:
-        return
     await event.reply(
         "🤖 *Squad 4x Assistant Bot*\n\n"
-        "I answer your questions using AI. Simply use:\n"
-        "`/ask <your question>`\n\n"
-        "Example: `/ask What is a Forex broker?`\n\n"
-        "I never reveal my AI provider – I'm just your group assistant.",
+        "Use `/ask <your question>` to get answers.\n"
+        "Example: `/ask What is a Forex broker?`",
         parse_mode="markdown"
     )
 
@@ -148,11 +126,13 @@ async def start_cmd(event):
 async def main():
     await bot.start(bot_token=BOT_TOKEN)
     me = await bot.get_me()
-    log.info(f"🤖 Assistant Bot started: @{me.username}")
+    log.info(f"✅ Assistant Bot started: @{me.username}")
     if GROUP_ID:
         log.info(f"Listening to group ID: {GROUP_ID}")
     if ALLOW_PRIVATE:
         log.info("Also listening to private chats")
+    else:
+        log.info("Private chats disabled (set ALLOW_PRIVATE=true to enable)")
     await bot.run_until_disconnected()
 
 if __name__ == "__main__":
