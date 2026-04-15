@@ -1,0 +1,5 @@
+# requirements.txt for view booster
+
+aiohttp>=3.9.0
+aiohttp-socks>=0.8.0       # For SOCKS4/SOCKS5 proxy support
+python-telegram-bot>=21.0  # Only needed for boost_commands.py (bot integration)
