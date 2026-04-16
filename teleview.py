@@ -9,7 +9,7 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
 # --- CONFIG ---
-BOT_TOKEN = "YOUR_BOT_TOKEN_HERE" # እዚህ ጋር ቶከንህን አስገባ
+BOT_TOKEN = "8254387734:AAEd4VK_abdQuwgbFEiadoqj7UwlxDpmg3A" # እዚህ ጋር ቶከንህን አስገባ
 SOURCES = [
     "https://api.proxyscrape.com/v2/?request=getproxies&protocol=socks5&timeout=5000",
     "https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/socks5.txt",
