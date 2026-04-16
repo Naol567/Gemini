@@ -1,6 +1,3 @@
- 
-
-
 import asyncio, aiohttp, re, random, time
 from datetime import timedelta
 from aiohttp_socks import ProxyConnector
@@ -10,37 +7,12 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 # --- CONFIG ---
 BOT_TOKEN = "8759135008:AAFc5a-Ek1RrtmAwd7vWK04kdyt21TNgE4I"
 # ዋና የፕሮክሲ ምንጮች
-PROXY_SOURCES = [
+SOURCES = [
+    "https://api.proxyscrape.com/v2/?request=getproxies&protocol=socks5&timeout=5000",
+    "https://proxylist.geonode.com/api/proxy-list?limit=500&page=1&sort_by=lastChecked&sort_type=desc",
     "https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/socks5.txt",
-    "https://raw.githubusercontent.com/Thordata/awesome-free-proxy-list/main/proxies/socks5.txt",
-    "https://raw.githubusercontent.com/Ian-Lusule/Proxies/main/proxies/socks5.txt",
-    "https://raw.githubusercontent.com/iplocate/free-proxy-list/main/protocols/socks5.txt",
-    "https://raw.githubusercontent.com/GoekhanDev/free-proxy-list/main/data/txt/socks5.txt",
-    "https://raw.githubusercontent.com/joy-deploy/free-proxy-list/main/data/latest/types/socks5/proxies.txt",
-    "https://raw.githubusercontent.com/Loclki/PROXY-List/master/socks5.txt",
-    "https://raw.githubusercontent.com/Argh94/Proxy-List/main/socks5.txt",
-    "https://raw.githubusercontent.com/gfpcom/free-proxy-list/main/list/socks5.txt",
-    "https://raw.githubusercontent.com/fyvri/fresh-proxy-list/main/socks5.txt",
-    "https://raw.githubusercontent.com/ShadowsocksR/Proxy-List/master/socks5.txt",
-    "https://raw.githubusercontent.com/mmpx12/proxy-list/master/socks5.txt",
-    "https://raw.githubusercontent.com/saschazesiger/Free-Proxies/master/socks5.txt",
-    "https://raw.githubusercontent.com/officialputuid/tools/main/Proxy/socks5.txt",
-    "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/socks5.txt",
-    "https://api.proxyscrape.com/v2/?request=getproxies&protocol=socks5&timeout=10000",
-    "https://proxylist.geonode.com/api/proxy-list?limit=500&page=1&sort_by=lastChecked&sort_type=desc&protocols=socks5",
-    "https://proxyspace.pro/socks5.txt",
-    "https://www.proxy-list.download/api/v1/get?type=socks5",
-    "https://multiproxy.org/txt_all/proxy.txt",
-    "https://rootjazz.com/proxies/proxies.txt",
-    "https://openproxy.space/list/socks5",
-    "https://raw.githubusercontent.com/jetkai/proxy-list/main/online-proxies/txt/proxies-socks5.txt",
-    "https://raw.githubusercontent.com/manuGMG/proxy-365/main/SOCKS5.txt",
-    "https://raw.githubusercontent.com/roosterkid/openproxylist/main/SOCKS5_RAW.txt",
-    "https://raw.githubusercontent.com/hookzof/socks5_list/master/proxy.txt",
-    "https://raw.githubusercontent.com/zevtyardt/proxy-list/main/socks5.txt",
-    "https://raw.githubusercontent.com/clarketm/Proxy-list/master/socks5.txt",
-    "https://raw.githubusercontent.com/sunny9577/proxy-scraper/master/proxies/socks5.txt",
-    "https://raw.githubusercontent.com/ALIILAPRO/Proxy/main/socks5.txt",
+    "https://raw.githubusercontent.com/Zaeem20/FREE_PROXIES_LIST/master/socks5.txt",
+    "https://proxyspace.pro/socks5.txt"
 ]
 
 class ViewEngine:
