@@ -6,13 +6,13 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 # --- CONFIG ---
 BOT_TOKEN = "8254387734:AAEd4VK_abdQuwgbFEiadoqj7UwlxDpmg3A"
 
-# ያኔ ሰርቶልኝ ነበር ያልከው የፕሮክሲ ምንጮች
-SOURCES = [
-    "https://api.proxyscrape.com/v2/?request=getproxies&protocol=socks5&timeout=5000",
-    "https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/socks5.txt",
-    "https://raw.githubusercontent.com/Zaeem20/FREE_PROXIES_LIST/master/socks5.txt",
+# አዳዲስ እና ፈጣን የፕሮክሲ ምንጮች (GitHub ያልሆኑ)
+NEW_SOURCES = [
+    "https://api.proxyscrape.com/v2/?request=getproxies&protocol=socks5&timeout=5000&country=all",
     "https://proxyspace.pro/socks5.txt",
-    "https://api.openproxylist.xyz/socks5.txt"
+    "https://api.openproxylist.xyz/socks5.txt",
+    "https://www.proxy-list.download/api/v1/get?type=socks5",
+    "https://www.proxyscan.io/download?type=socks5"
 ]
 
 class ViewEngine:
@@ -22,9 +22,7 @@ class ViewEngine:
         self.success, self.start_views, self.current_views = 0, 0, 0
         self.start_time = None
         self.proxies = []
-        self.custom_url = ""
-        # ያኔ ቪው እንዲቆጥር ያደረገው ወሳኝ የፍጥነት ገደብ (Semaphore)
-        self.sem = asyncio.Semaphore(2000) 
+        self.sem = asyncio.Semaphore(2000) # ያኔ የሰራው ፍጥነት
 
     async def get_views(self):
         try:
@@ -38,12 +36,11 @@ class ViewEngine:
         except: return 0
         return 0
 
-    async def scrape(self):
-        """ያኔ የነበረው ቀጥተኛ የፕሮክሲ አሰባሰብ ስልት"""
-        all_srcs = SOURCES + ([self.custom_url] if self.custom_url else [])
+    async def refresh_proxies(self):
+        """አዳዲስ ፕሮክሲዎችን ከምንጮች መሰብሰብ"""
         temp = []
         async with aiohttp.ClientSession() as s:
-            for url in all_srcs:
+            for url in NEW_SOURCES:
                 try:
                     async with s.get(url, timeout=10) as r:
                         text = await r.text()
@@ -58,11 +55,12 @@ class ViewEngine:
             if not self.is_running: return
             try:
                 conn = ProxyConnector.from_url(f"{pt}://{p}")
-                # ያኔ ሰርቶልኛል ያልከው ዋናው Header ሴቲንግ እዚህ ጋር ነው!
+                # ያኔ ሰርቶልኛል ያልከው ዋናው Header (ቁልፉ ይሄ ነው)
                 h = {
-                    'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15',
+                    'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15',
                     'Referer': f'https://t.me/{self.channel}/{self.post_id}?embed=1',
-                    'X-Requested-With': 'XMLHttpRequest', # ይህ ካልተጨመረ ቴሌግራም አይቆጥረውም
+                    'X-Requested-With': 'XMLHttpRequest',
+                    'Accept': '*/*',
                     'Accept-Language': 'en-US,en;q=0.9'
                 }
                 async with aiohttp.ClientSession(connector=conn, timeout=aiohttp.ClientTimeout(total=5, connect=2)) as s:
@@ -70,7 +68,7 @@ class ViewEngine:
                         res = await r.text()
                         token = re.search(r'data-view="([^"]+)"', res)
                         if token:
-                            # ቪው ለማስቆጠር የሚደረግ 2ኛው ጥያቄ
+                            # እውነተኛ ቪው ለማስቆጠር የሚደረግ ፖስት
                             async with s.post(f"https://t.me/v/?views={token.group(1)}", headers=h) as vr:
                                 if "true" in await vr.text():
                                     self.success += 1
@@ -80,50 +78,51 @@ engine = ViewEngine()
 
 async def work(msg):
     while engine.is_running:
+        # የቪው ብዛት ማረጋገጥ
         v = await engine.get_views()
         if v > 0: engine.current_views = v
         
         added = max(0, engine.current_views - engine.start_views)
         if engine.current_views >= (engine.start_views + engine.target):
             engine.is_running = False
-            await msg.edit_text(f"✅ ተጠናቋል!\nቪው: {engine.current_views}")
+            await msg.edit_text(f"✅ ስራ ተጠናቋል!\nአጠቃላይ ቪው: {engine.current_views}")
             break
 
         elapsed = time.time() - engine.start_time
         speed = int(added / (elapsed / 60)) if elapsed > 0 else 0
         
-        status = (f"🚀 **MASTER TURBO MODE**\n"
+        status = (f"🔥 **NON-GITHUB TURBO MODE**\n"
                   f"━━━━━━━━━━━━━━━\n"
                   f"📈 Views: `{engine.current_views}`\n"
                   f"⚡ Speed: `{speed} v/min` | ✅ Success: `{engine.success}`\n"
-                  f"📡 Pool: `{len(engine.proxies)}` \n"
+                  f"📡 Fresh Pool: `{len(engine.proxies)}` \n"
                   f"━━━━━━━━━━━━━━━")
         try: await msg.edit_text(status, parse_mode="Markdown")
         except: pass
         
-        await engine.scrape()
+        # በየዙሩ አዳዲስ ፕሮክሲዎችን ማምጣት
+        await engine.refresh_proxies()
+        
+        # ስራውን ማስጀመር
         tasks = [engine.hit(pt, p) for pt, p in engine.proxies[:2500]]
         if tasks: await asyncio.gather(*tasks)
         await asyncio.sleep(0.5)
 
 async def add(update, context):
-    if len(context.args) < 3: return
-    engine.channel, engine.post_id, engine.target = context.args[0].replace("@",""), int(context.args[1]), int(context.args[2])
+    if len(context.args) < 3:
+        return await update.message.reply_text("ትክክለኛ አጠቃቀም: `/add channel post_id target`")
+    
+    engine.channel = context.args[0].replace("@","")
+    engine.post_id = int(context.args[1])
+    engine.target = int(context.args[2])
     engine.is_running, engine.success, engine.start_time = True, 0, time.time()
     engine.start_views = await engine.get_views()
-    msg = await update.message.reply_text("🔥 ስራው በዋናው ዘዴ ተጀመረ...")
+    
+    msg = await update.message.reply_text("🚀 አዳዲስ ምንጮችን በመጠቀም ስራ ተጀመረ...")
     context.application.create_task(work(msg))
-
-async def handle_api(update, context):
-    txt = update.message.text.strip()
-    if txt.startswith("http"):
-        engine.custom_url = txt
-        await update.message.reply_text("✅ የ GitHub API ተጨምሯል።")
 
 if __name__ == "__main__":
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("add", add))
     app.add_handler(CommandHandler("stop", lambda u,c: setattr(engine, 'is_running', False)))
-    app.add_handler(CommandHandler("reset", lambda u,c: (engine.proxies.clear(), setattr(engine, 'success', 0))))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_api))
     app.run_polling()
