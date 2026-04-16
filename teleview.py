@@ -1,209 +1,150 @@
-# // Telegram Auto Views 2024 \\
-# Asynchronous Operation: Optimized for performance and speed.
-# Full Proxy Support: HTTP/S, SOCKS4, SOCKS5 proxies are fully supported.
-# Auto Proxy Scraping: No need to manually collect proxies – the tool scrapes them automatically.
-# URL: https://github.com/javadbazokar/Telegram-Auto-Post-View
+# // Telegram Auto Views 2024 - Optimized Version \\
+# Fixed for automatic proxy scraping from provided links
 
 import aiohttp, asyncio
-from re import search
+from re import search, compile
 from aiohttp_socks import ProxyConnector
 from argparse import ArgumentParser
-from re import compile
 from os import system, name
 from threading import Thread
 from time import sleep
 
-
 user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Safari/537.36"
-REGEX = compile(
-    r"(?:^|\D)?(("+ r"(?:[1-9]|[1-9]\d|1\d{2}|2[0-4]\d|25[0-5])"
-    + r"\." + r"(?:\d|[1-9]\d|1\d{2}|2[0-4]\d|25[0-5])"
-    + r"\." + r"(?:\d|[1-9]\d|1\d{2}|2[0-4]\d|25[0-5])"
-    + r"\." + r"(?:\d|[1-9]\d|1\d{2}|2[0-4]\d|25[0-5])"
-    + r"):" + (r"(?:\d|[1-9]\d{1,3}|[1-5]\d{4}|6[0-4]\d{3}"
-    + r"|65[0-4]\d{2}|655[0-2]\d|6553[0-5])")
-    + r")(?:\D|$)"
-)
+# IP:PORT ፎርማትን ለመለየት
+REGEX = compile(r"\d{1,3}(?:\.\d{1,3}){3}(?::\d{1,5})?")
 
+# አንተ የላክካቸው የፕሮክሲ ምንጮች
+AUTO_PROXY_SOURCES = [
+    "https://raw.githubusercontent.com/javadbazokar/PROXY-List/refs/heads/main/http.txt",
+    "https://raw.githubusercontent.com/proxifly/free-proxy-list/main/proxies/protocols/http/data.txt",
+    "https://raw.githubusercontent.com/zloi-user/hideip.me/main/http.txt",
+    "https://openproxylist.xyz/http.txt",
+    "https://api.proxyscrape.com/v2/?request=getproxies&protocol=http",
+    "https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/http.txt",
+    "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/http.txt",
+    "https://raw.githubusercontent.com/officialputuid/KangProxy/KangProxy/http/http.txt",
+    "https://raw.githubusercontent.com/tuanminpay/live-proxy/master/http.txt",
+    "https://raw.githubusercontent.com/mmpx12/proxy-list/master/http.txt",
+    "https://api.proxyscrape.com/v2/?request=getproxies&protocol=socks5",
+    "https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/socks5.txt"
+]
 
 class Telegram:
     def __init__(self, channel: str, post: int) -> None:
-        # Async Tasks
-        self.tasks = 225 
-        
+        self.tasks = 150 # በአንድ ጊዜ የሚላኩ ቪውዎች ብዛት
         self.channel = channel
         self.post = post
-        
-        self.cookie_error = 0
         self.sucsess_sent = 0
         self.failled_sent = 0
-        self.token_error  = 0
-        self.proxy_error  = 0
-
+        self.proxy_error = 0
+        self.token_error = 0
+        self.cookie_error = 0
 
     async def request(self, proxy: str, proxy_type: str):
-        if proxy_type == 'socks4': connector = ProxyConnector.from_url(f'socks4://{proxy}')
-        elif proxy_type == 'socks5': connector = ProxyConnector.from_url(f'socks5://{proxy}')
-        elif proxy_type == 'https': connector = ProxyConnector.from_url(f'https://{proxy}')
-        else: connector = ProxyConnector.from_url(f'http://{proxy}')
-        
-        jar = aiohttp.CookieJar(unsafe=True)
-        async with aiohttp.ClientSession(cookie_jar=jar, connector=connector) as session:
-            try:
+        try:
+            if proxy_type == 'socks4': connector = ProxyConnector.from_url(f'socks4://{proxy}')
+            elif proxy_type == 'socks5': connector = ProxyConnector.from_url(f'socks5://{proxy}')
+            else: connector = ProxyConnector.from_url(f'http://{proxy}')
+            
+            async with aiohttp.ClientSession(connector=connector) as session:
+                # 1. ፖስቱን በመጎብኘት Token መውሰድ
                 async with session.get(
                     f'https://t.me/{self.channel}/{self.post}?embed=1&mode=tme', 
-                    headers={
-                        'referer': f'https://t.me/{self.channel}/{self.post}',
-                        'user-agent': user_agent
-                    }, timeout=aiohttp.ClientTimeout(total=5)
-                ) as embed_response:
-                    if jar.filter_cookies(embed_response.url).get('stel_ssid'):
-                        views_token = search('data-view="([^"]+)"', await embed_response.text())
-                        if views_token:
-                            views_response = await session.post(
-                                'https://t.me/v/?views=' + views_token.group(1), 
-                                headers={
-                                    'referer': f'https://t.me/{self.channel}/{self.post}?embed=1&mode=tme',
-                                    'user-agent': user_agent, 'x-requested-with': 'XMLHttpRequest'
-                                }, timeout=aiohttp.ClientTimeout(total=5)
-                            )
-                            if (
-                                await views_response.text() == "true" 
-                                and views_response.status == 200
-                            ): self.sucsess_sent += 1
-                            else: self.failled_sent += 1
-                        else: self.token_error += 1
-                    else: self.cookie_error += 1
-            except: self.proxy_error += 1
-            finally: jar.clear()
+                    headers={'user-agent': user_agent},
+                    timeout=aiohttp.ClientTimeout(total=10)
+                ) as response:
+                    html = await response.text()
+                    token = search(r'data-view="([^"]+)"', html)
+                    
+                    if token:
+                        # 2. ቪው መላክ
+                        async with session.post(
+                            f'https://t.me/v/?views={token.group(1)}', 
+                            headers={
+                                'referer': f'https://t.me/{self.channel}/{self.post}?embed=1&mode=tme',
+                                'user-agent': user_agent,
+                                'x-requested-with': 'XMLHttpRequest'
+                            }, timeout=aiohttp.ClientTimeout(total=10)
+                        ) as v_resp:
+                            if (await v_resp.text() == "true"):
+                                self.sucsess_sent += 1
+                            else:
+                                self.failled_sent += 1
+                    else:
+                        self.token_error += 1
+        except:
+            self.proxy_error += 1
 
-
-    def run_proxies_tasks(self, lines: list, proxy_type):
-        async def inner(proxies: list):
-            await asyncio.wait(
-                [asyncio.create_task(self.request(proxy, proxy_type)) 
-                for proxy in proxies])
-        chunks = [lines[i:i+self.tasks] for i in range(0, len(lines), self.tasks)]
-        for chunk in chunks: asyncio.run(inner(chunk))
-    
-    
     def run_auto_tasks(self):
         while True:
-            async def inner(proxies: tuple):
-                await asyncio.wait(
-                    [asyncio.create_task(self.request(proxy, proxy_type)) 
-                    for proxy_type, proxy in proxies])
             auto = Auto()
+            if not auto.proxies:
+                print(" [!] No proxies found, retrying...")
+                sleep(5); continue
+
+            async def inner(proxies_list):
+                tasks_list = [asyncio.create_task(self.request(p, pt)) for pt, p in proxies_list]
+                await asyncio.wait(tasks_list)
+
+            # ፕሮክሲዎቹን በቡድን (Chunks) መላክ
             chunks = [auto.proxies[i:i+self.tasks] for i in range(0, len(auto.proxies), self.tasks)]
-            for chunk in chunks: asyncio.run(inner(chunk))
-
-
-    async def run_rotated_task(self, proxy, proxy_type):
-        while True: 
-            await asyncio.wait(
-                [asyncio.create_task(self.request(proxy, proxy_type)) 
-                for _ in range(self.tasks)])
-
+            for chunk in chunks:
+                asyncio.run(inner(chunk))
+            
+            print(f" [!] Finished one cycle. Total Success: {self.sucsess_sent}")
+            sleep(2)
 
     def cli(self):
-        logo = '''
-        *** Telegram Auto Views 2024 ***
-          ** github.com/javadbazokar **
-               * @javadbazokar *
-        '''
-        while not self.sucsess_sent:
-            print(logo)
-            print('\n\n        [ Waiting... ]\r')
-            sleep(0.3);system('cls' if name=='nt' else 'clear')
-
+        logo = "--- Telegram Auto Views 2024 (Optimized) ---"
         while True:
+            system('cls' if name=='nt' else 'clear')
             print(logo)
-            print(f'''
-        DATA: 
-        @{self.channel}/{self.post}
-        Sent: {self.sucsess_sent}
-        Fail: {self.failled_sent}
-
+            print(f"""
+        TARGET: @{self.channel}/{self.post}
+        
+        SUCCESS: {self.sucsess_sent}
+        FAILED:  {self.failled_sent}
+        
         ERRORS:
         Proxy Error:  {self.proxy_error}
         Token Error:  {self.token_error}
-        Cookie Error: {self.cookie_error}
-            ''')
-            sleep(0.3);system('cls' if name=='nt' else 'clear')
-
+            """)
+            sleep(2)
 
 class Auto:
     def __init__(self):
         self.proxies = []
-        try: 
-            with open(f'ProxyLink/http.txt', 'r') as file:
-                self.http_sources = file.read().splitlines()
-                
-            with open(f'ProxyLink/socks4.txt', 'r') as file:
-                self.socks4_sources = file.read().splitlines()
-                
-            with open(f'ProxyLink/socks5.txt', 'r') as file:
-                self.socks5_sources = file.read().splitlines()
-                
-        except FileNotFoundError: 
-            print(' [ Error ] auto file not found!')
-            exit()
-        
-        print(' [ Please Wait ] Scraping proxies... ')
         asyncio.run(self.init())
 
-
-    async def scrap(self, source_url, proxy_type):
+    async def scrap(self, url):
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.get(
-                    source_url, 
-                    headers={'user-agent': user_agent}, 
-                    timeout=aiohttp.ClientTimeout(total=15)
-                ) as response:
-                    html = await response.text()
-                    if tuple(REGEX.finditer(html)):
-                        for proxy in tuple(REGEX.finditer(html)):
-                            self.proxies.append( (proxy_type, proxy.group(1)) )
-        except Exception as e:
-            with open('error.txt', 'a', encoding='utf-8', errors='ignore') as f:
-                f.write(f'{source_url} -> {e}\n')
-
+                async with session.get(url, headers={'user-agent': user_agent}, timeout=15) as resp:
+                    text = await resp.text()
+                    found = REGEX.findall(text)
+                    for p in found:
+                        # ለቀላልነት ሁሉንም እንደ http/socks5 መሞከር
+                        p_type = 'socks5' if 'socks5' in url else 'http'
+                        self.proxies.append((p_type, p))
+        except:
+            pass
 
     async def init(self):
-        tasks = []
-        self.proxies.clear()
-        for sources in (
-            (self.http_sources, 'http'), 
-            (self.socks4_sources, 'socks4'), 
-            (self.socks5_sources, 'socks5') 
-        ):
-            srcs, proxy_type = sources
-            for source_url in srcs: 
-                task = asyncio.create_task(
-                    self.scrap(source_url, proxy_type)
-                )
-                tasks.append(task)
-        await asyncio.wait(tasks)
+        tasks = [asyncio.create_task(self.scrap(url)) for url in AUTO_PROXY_SOURCES]
+        if tasks:
+            await asyncio.wait(tasks)
 
+if __name__ == "__main__":
+    parser = ArgumentParser()
+    parser.add_argument('-c', '--channel', required=True, help='Channel username')
+    parser.add_argument('-pt', '--post', required=True, type=int, help='Post ID')
+    parser.add_argument('-m', '--mode', default='auto', help='Mode (auto)')
+    args = parser.parse_args()
 
-parser = ArgumentParser()
-parser.add_argument('-c', '--channel', dest='channel', help='Channel user', type=str, required=True)
-parser.add_argument('-pt', '--post', dest='post', help='Post number', type=int, required=True)
-parser.add_argument('-t', '--type', dest='type', help='Proxy type', type=str, required=False)
-parser.add_argument('-m', '--mode', dest='mode', help='Proxy mode', type=str, required=True)
-parser.add_argument('-p', '--proxy', dest='proxy', help='Proxy file path or user:password@host:port', type=str, required=False)
-args = parser.parse_args()
-
-api = Telegram(args.channel, args.post)
-Thread(target=api.cli).start()
-
-if args.mode[0] == "l":
-    with open(args.proxy, 'r') as file:
-        lines = file.read().splitlines()
-    api.run_proxies_tasks(lines, args.type)
-
-elif args.mode[0] == "r":  
-    asyncio.run(api.run_rotated_task(args.proxy, args.type))
+    api = Telegram(args.channel, args.post)
     
-else: api.run_auto_tasks()
+    # UI thread
+    Thread(target=api.cli, daemon=True).start()
+    
+    # Start process
+    api.run_auto_tasks()
