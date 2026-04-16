@@ -6,13 +6,12 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 # --- CONFIG ---
 BOT_TOKEN = "8254387734:AAEd4VK_abdQuwgbFEiadoqj7UwlxDpmg3A"
 
-# ቴሌግራም በቀላሉ የማይደርስባቸው አዳዲስ ምንጮች
-SOURCES = [
-    "https://api.proxyscrape.com/v2/?request=getproxies&protocol=socks5&timeout=10000&country=all",
-    "https://raw.githubusercontent.com/hookzof/socks5_list/master/proxy.txt",
-    "https://raw.githubusercontent.com/jetkai/proxy-list/main/online-proxies/txt/proxies-socks5.txt",
-    "https://raw.githubusercontent.com/rdavydov/proxy-list/main/socks5.txt",
-    "https://raw.githubusercontent.com/roosterkid/openproxylist/main/SOCKS5.txt"
+# Geonode እና ሌሎች ትኩስ ምንጮች
+GEONODE_API = "https://proxylist.geonode.com/api/proxy-list?limit=500&page=1&sort_by=lastChecked&sort_type=desc"
+OTHER_SOURCES = [
+    "https://api.proxyscrape.com/v2/?request=getproxies&protocol=socks5&timeout=5000",
+    "https://proxyspace.pro/socks5.txt",
+    "https://api.openproxylist.xyz/socks5.txt"
 ]
 
 class ViewEngine:
@@ -22,7 +21,7 @@ class ViewEngine:
         self.success, self.start_views, self.current_views = 0, 0, 0
         self.start_time = None
         self.proxies = []
-        self.sem = asyncio.Semaphore(1000) # ጥራቱን ለመጠበቅ ወደ 1000 ዝቅ ብሏል
+        self.sem = asyncio.Semaphore(1500) # ለጥራት እና ለፍጥነት የተመጣጠነ
 
     async def get_views(self):
         try:
@@ -36,16 +35,27 @@ class ViewEngine:
         except: return 0
         return 0
 
-    async def scrape(self):
+    async def scrape_geonode(self):
+        """ከ Geonode JSON ዳታ ላይ ፕሮክሲዎችን መለቅም"""
         temp = []
         async with aiohttp.ClientSession() as s:
-            for url in SOURCES:
-                try:
+            try:
+                # 1. Geonode Scrape
+                async with s.get(GEONODE_API, timeout=10) as r:
+                    data = await r.json()
+                    for p in data.get('data', []):
+                        # Socks5 ብቻ ለይቶ መውሰድ
+                        if 'socks5' in p.get('protocols', []):
+                            temp.append(('socks5', f"{p['ip']}:{p['port']}"))
+                
+                # 2. Other Sources Scrape
+                for url in OTHER_SOURCES:
                     async with s.get(url, timeout=10) as r:
                         text = await r.text()
                         found = re.findall(r"\d{1,3}(?:\.\d{1,3}){3}(?::\d{1,5})?", text)
                         temp.extend([('socks5', p) for p in found])
-                except: pass
+            except: pass
+        
         self.proxies = list(set(temp))
         random.shuffle(self.proxies)
 
@@ -54,22 +64,16 @@ class ViewEngine:
             if not self.is_running: return
             try:
                 conn = ProxyConnector.from_url(f"{pt}://{p}")
-                # ያኔ ሰርቶልኛል ያልከው ቁልፍ Headers
                 h = {
-                    'User-Agent': random.choice([
-                        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                        'Mozilla/5.0 (iPhone; CPU iPhone OS 17_4_1 like Mac OS X) AppleWebKit/605.1.15',
-                        'Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36'
-                    ]),
+                    'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15',
                     'X-Requested-With': 'XMLHttpRequest',
-                    'Referer': f'https://t.me/{self.channel}/{self.post_id}?embed=1',
-                    'Origin': 'https://t.me'
+                    'Referer': f'https://t.me/{self.channel}/{self.post_id}?embed=1'
                 }
-                async with aiohttp.ClientSession(connector=conn, timeout=aiohttp.ClientTimeout(total=6, connect=3)) as s:
+                async with aiohttp.ClientSession(connector=conn, timeout=aiohttp.ClientTimeout(total=5, connect=2)) as s:
                     async with s.get(f"https://t.me/{self.channel}/{self.post_id}?embed=1", headers=h) as r:
-                        token = re.search(r'data-view="([^"]+)"', await r.text())
+                        res = await r.text()
+                        token = re.search(r'data-view="([^"]+)"', res)
                         if token:
-                            # ቴሌግራምን እውነተኛ ቪው እንደሆነ የሚያሳምን ፖስት
                             async with s.post(f"https://t.me/v/?views={token.group(1)}", headers=h) as vr:
                                 if "true" in await vr.text():
                                     self.success += 1
@@ -81,8 +85,8 @@ async def work(msg):
     while engine.is_running:
         v = await engine.get_views()
         if v > 0: engine.current_views = v
-        
         added = max(0, engine.current_views - engine.start_views)
+        
         if engine.current_views >= (engine.start_views + engine.target):
             engine.is_running = False
             break
@@ -90,28 +94,28 @@ async def work(msg):
         elapsed = time.time() - engine.start_time
         speed = int(added / (elapsed / 60)) if elapsed > 0 else 0
         
-        status = (f"🛡 **VERIFIED MASTER MODE**\n"
+        status = (f"⚡ **GEONODE TURBO ACTIVE**\n"
                   f"━━━━━━━━━━━━━━━\n"
-                  f"📊 Views: `{engine.current_views}`\n"
+                  f"📈 Views: `{engine.current_views}`\n"
                   f"✅ Success: `{engine.success}`\n"
-                  f"⚡ Speed: `{speed} v/min`\n"
+                  f"🚀 Speed: `{speed} v/min`\n"
                   f"📡 Pool: `{len(engine.proxies)}` \n"
                   f"━━━━━━━━━━━━━━━")
         try: await msg.edit_text(status, parse_mode="Markdown")
         except: pass
         
-        await engine.scrape()
-        # ቴሌግራምን ሳንቀሰቅስ ቪው ለማስቆጠር
-        tasks = [engine.hit(pt, p) for pt, p in engine.proxies[:1500]]
+        await engine.scrape_geonode()
+        # በፍሬ እንዲቆጥር ትኩስ ፕሮክሲዎችን መርጨት
+        tasks = [engine.hit(pt, p) for pt, p in engine.proxies[:2000]]
         if tasks: await asyncio.gather(*tasks)
-        await asyncio.sleep(2) # ቴሌግራም "Freeze" እንዳያደርገው የ 2 ሰከንድ እረፍት
+        await asyncio.sleep(0.5)
 
 async def add(update, context):
     if len(context.args) < 3: return
     engine.channel, engine.post_id, engine.target = context.args[0].replace("@",""), int(context.args[1]), int(context.args[2])
     engine.is_running, engine.success, engine.start_time = True, 0, time.time()
     engine.start_views = await engine.get_views()
-    msg = await update.message.reply_text("⏳ ትኩስ ፕሮክሲዎችን እያዘጋጀሁ ነው...")
+    msg = await update.message.reply_text("🔄 Geonode API በመጠቀም ትኩስ ፕሮክሲዎች እየተጫኑ ነው...")
     context.application.create_task(work(msg))
 
 if __name__ == "__main__":
