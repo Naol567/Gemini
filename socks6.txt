@@ -1,4 +1,0 @@
-https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/socks5.txt
-https://raw.githubusercontent.com/ShiftyTR/Proxy-List/master/socks5.txt
-https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/socks5.txt
-https://raw.githubusercontent.com/jetkai/proxy-list/main/online-proxies/txt/proxies-socks5.txt
