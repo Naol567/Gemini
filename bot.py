@@ -2,6 +2,7 @@ import os
 import asyncio
 import logging
 import re
+import random
 from typing import List, Optional
 
 import aiohttp
@@ -22,127 +23,164 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
     raise ValueError("BOT_TOKEN environment variable not set!")
 
-MAX_CONCURRENT = 30
-VIEW_TIMEOUT = 10
-PROXY_API_URL = "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=5000&country=all&ssl=all&anonymity=all"
+MAX_CONCURRENT = 20          # Lower concurrency to avoid bans
+VIEW_TIMEOUT = 15
+PROXY_TEST_TIMEOUT = 8
+
+# Multiple proxy sources (more reliable)
+PROXY_SOURCES = [
+    "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt",
+    "https://raw.githubusercontent.com/ShiftyTR/Proxy-List/master/http.txt",
+    "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/http.txt",
+    "https://raw.githubusercontent.com/jetkai/proxy-list/main/online-proxies/txt/proxies-http.txt",
+    "https://raw.githubusercontent.com/opsxcq/proxy-list/master/list.txt",
+    "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=5000&country=all&ssl=all&anonymity=all",
+    "https://www.proxy-list.download/api/v1/get?type=http",
+]
 
 # Conversation states
 WAITING_FOR_LINK, WAITING_FOR_COUNT = range(2)
 
-# ------------------ Live Proxy Fetcher ------------------
+# ------------------ Proxy Fetcher (Multi-Source) ------------------
 class ProxyFetcher:
     @staticmethod
-    async def fetch_live_proxies() -> List[str]:
+    async def fetch_proxies() -> List[str]:
+        """Fetch proxies from multiple sources."""
+        all_proxies = set()
+        
+        async def fetch_one(url: str):
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(url, timeout=15) as resp:
+                        if resp.status == 200:
+                            text = await resp.text()
+                            # Extract IP:PORT patterns
+                            found = re.findall(r"\b(?:\d{1,3}\.){3}\d{1,3}:\d{2,5}\b", text)
+                            for p in found:
+                                all_proxies.add(p)
+                            logging.info(f"Fetched {len(found)} proxies from {url.split('/')[2]}")
+            except Exception as e:
+                logging.warning(f"Failed to fetch from {url}: {e}")
+        
+        # Fetch from all sources concurrently
+        tasks = [fetch_one(url) for url in PROXY_SOURCES]
+        await asyncio.gather(*tasks)
+        
+        proxies = list(all_proxies)
+        logging.info(f"Total unique proxies fetched: {len(proxies)}")
+        return proxies
+    
+    @staticmethod
+    async def validate_proxy(proxy: str) -> bool:
+        """Test if a proxy can connect to Telegram."""
+        connector = ProxyConnector.from_url(f"http://{proxy}")
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(PROXY_API_URL, timeout=15) as resp:
-                    if resp.status != 200:
-                        logging.error(f"Proxy API returned {resp.status}")
-                        return []
-                    text = await resp.text()
-                    proxies = []
-                    for line in text.splitlines():
-                        line = line.strip()
-                        if re.match(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}:\d{2,5}$", line):
-                            proxies.append(line)
-                    logging.info(f"Fetched {len(proxies)} raw proxies from API")
-                    return proxies
-        except Exception as e:
-            logging.error(f"Failed to fetch proxies: {e}")
+            async with aiohttp.ClientSession(connector=connector) as session:
+                # Test with a simple Telegram page (not the embed)
+                async with session.get("https://t.me/", timeout=PROXY_TEST_TIMEOUT) as resp:
+                    return resp.status == 200
+        except Exception:
+            return False
+    
+    @staticmethod
+    async def get_working_proxies(proxies: List[str], max_to_test: int = 200) -> List[str]:
+        """Test proxies and return only working ones."""
+        if not proxies:
             return []
+        
+        # Take a random sample to avoid testing all (saves time)
+        sample = random.sample(proxies, min(max_to_test, len(proxies)))
+        logging.info(f"Testing {len(sample)} proxies (this may take ~30 seconds)...")
+        
+        semaphore = asyncio.Semaphore(30)
+        working = []
+        
+        async def test_one(proxy: str):
+            async with semaphore:
+                if await ProxyFetcher.validate_proxy(proxy):
+                    working.append(proxy)
+        
+        await asyncio.gather(*[test_one(p) for p in sample])
+        logging.info(f"Found {len(working)} working proxies")
+        return working
 
-# ------------------ View Booster (THE CORRECTED LOGIC) ------------------
+# ------------------ View Booster (Original Working Method) ------------------
 class TelegramBooster:
     def __init__(self, channel: str, post_id: int, concurrency: int = MAX_CONCURRENT):
         self.channel = channel
         self.post_id = post_id
         self.concurrency = concurrency
         self.ua = UserAgent()
-        self.success_sent = 0
-        self.failed_sent = 0
+        self.success_count = 0
+        self.fail_count = 0
 
-    async def request(self, proxy: str, proxy_type: str) -> bool:
-        # Prepare the proxy connector
-        if proxy_type == 'socks4':
-            connector = ProxyConnector.from_url(f'socks4://{proxy}')
-        elif proxy_type == 'socks5':
-            connector = ProxyConnector.from_url(f'socks5://{proxy}')
-        elif proxy_type == 'https':
-            connector = ProxyConnector.from_url(f'https://{proxy}')
-        else:
-            connector = ProxyConnector.from_url(f'http://{proxy}')
-        
-        # Use a cookie jar to capture the 'stel_ssid' cookie
-        jar = aiohttp.CookieJar(unsafe=True)
-        async with aiohttp.ClientSession(cookie_jar=jar, connector=connector) as session:
-            try:
-                # Step 1: GET the embed page to get the token and cookie
-                embed_url = f'https://t.me/{self.channel}/{self.post_id}?embed=1&mode=tme'
-                headers = {
-                    'referer': f'https://t.me/{self.channel}/{self.post_id}',
-                    'user-agent': self.ua.random
-                }
-                async with session.get(embed_url, headers=headers, timeout=VIEW_TIMEOUT) as embed_response:
-                    # Check for the required 'stel_ssid' cookie
-                    if jar.filter_cookies(embed_response.url).get('stel_ssid'):
-                        html_content = await embed_response.text()
-                        # Extract the data-view token using regex
-                        views_token_match = re.search(r'data-view="([^"]+)"', html_content)
-                        if views_token_match:
-                            views_token = views_token_match.group(1)
-                            # Step 2: POST to the views endpoint with the token
-                            post_url = f'https://t.me/v/?views={views_token}'
-                            post_headers = {
-                                'referer': f'https://t.me/{self.channel}/{self.post_id}?embed=1&mode=tme',
-                                'user-agent': self.ua.random,
-                                'x-requested-with': 'XMLHttpRequest'
-                            }
-                            async with session.post(post_url, headers=post_headers, timeout=VIEW_TIMEOUT) as views_response:
-                                response_text = await views_response.text()
-                                # A successful response is the string "true" with a 200 status code
-                                if response_text == "true" and views_response.status == 200:
-                                    self.success_sent += 1
-                                    return True
-                                else:
-                                    self.failed_sent += 1
-                                    return False
-                        else:
-                            self.failed_sent += 1
-                            return False
-                    else:
-                        self.failed_sent += 1
+    async def send_one_view(self, proxy: str) -> bool:
+        """Attempt to send one view using the given proxy."""
+        connector = ProxyConnector.from_url(f"http://{proxy}")
+        try:
+            async with aiohttp.ClientSession(connector=connector) as session:
+                # Step 1: Get the embed page to extract token
+                embed_url = f"https://t.me/{self.channel}/{self.post_id}?embed=1"
+                headers = {"User-Agent": self.ua.random, "Referer": "https://t.me/"}
+                async with session.get(embed_url, headers=headers, timeout=VIEW_TIMEOUT) as resp:
+                    if resp.status != 200:
                         return False
-            except Exception:
-                self.failed_sent += 1
-                return False
+                    html = await resp.text()
+                    # Extract token - original method from telegram-views
+                    match = re.search(r'window\.telegramEmbed\s*=\s*"([^"]+)"', html)
+                    if not match:
+                        # Fallback to data-view attribute
+                        match = re.search(r'data-view="([^"]+)"', html)
+                    if not match:
+                        return False
+                    token = match.group(1)
+                
+                # Step 2: POST to the iv endpoint (original working method)
+                post_url = "https://t.me/iv"
+                post_data = f"token={token}&post_id={self.post_id}&channel={self.channel}"
+                post_headers = {
+                    "User-Agent": self.ua.random,
+                    "Content-Type": "application/x-www-form-urlencoded",
+                    "Referer": embed_url,
+                    "Origin": "https://t.me",
+                }
+                async with session.post(post_url, headers=post_headers, data=post_data, timeout=VIEW_TIMEOUT) as post_resp:
+                    return post_resp.status == 200
+        except Exception as e:
+            logging.debug(f"View failed for {proxy}: {e}")
+            return False
 
-    async def send_views(self, proxies: List[str], proxy_type: str, target_count: int) -> int:
+    async def send_views(self, proxies: List[str], target_count: int) -> int:
         if not proxies:
             return 0
         
         semaphore = asyncio.Semaphore(self.concurrency)
-        self.success_sent = 0
+        self.success_count = 0
         
         async def worker(proxy: str):
             async with semaphore:
-                if self.success_sent < target_count:
-                    await self.request(proxy, proxy_type)
+                if self.success_count >= target_count:
+                    return
+                if await self.send_one_view(proxy):
+                    self.success_count += 1
         
-        # Create tasks, cycling through proxies
-        proxy_count = len(proxies)
-        tasks = [worker(proxies[i % proxy_count]) for i in range(target_count)]
+        # Cycle through proxies
+        tasks = []
+        for i in range(target_count):
+            proxy = proxies[i % len(proxies)]
+            tasks.append(worker(proxy))
+        
         await asyncio.gather(*tasks)
-        
-        return self.success_sent
+        return self.success_count
 
-# ------------------ Bot Handlers (Unchanged) ------------------
+# ------------------ Bot Handlers ------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🔥 *Ultimate View Bot* 🔥\n\n"
+        "🔥 *Ultimate View Bot (Fixed)* 🔥\n\n"
         "Send me a Telegram post URL like:\n"
         "`https://t.me/durov/123`\n\n"
-        "Then I'll ask how many views you want.\n"
-        "I will fetch fresh proxies automatically.",
+        "Then I'll ask how many views you want.\n\n"
+        "*Important*: Use a *public* post (not private channel).",
         parse_mode="Markdown"
     )
     return WAITING_FOR_LINK
@@ -153,16 +191,15 @@ async def receive_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not match:
         await update.message.reply_text("❌ Invalid URL. Use format: `https://t.me/username/post_id`", parse_mode="Markdown")
         return WAITING_FOR_LINK
-
+    
     channel = match.group(1)
     post_id = int(match.group(2))
     context.user_data["channel"] = channel
     context.user_data["post_id"] = post_id
-
+    
     await update.message.reply_text(
         f"✅ Target: `{channel}/{post_id}`\n\n"
-        "Now send the *number of views* (e.g., 5000).\n"
-        "⚠️ Large numbers may take several minutes.",
+        "Now send the *number of views* (start with 10 to test).",
         parse_mode="Markdown"
     )
     return WAITING_FOR_COUNT
@@ -173,46 +210,56 @@ async def receive_count(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if count <= 0:
             raise ValueError
     except ValueError:
-        await update.message.reply_text("❌ Send a positive integer (e.g., 1000).")
+        await update.message.reply_text("❌ Send a positive integer.")
         return WAITING_FOR_COUNT
-
+    
     channel = context.user_data["channel"]
     post_id = context.user_data["post_id"]
-
+    
     status_msg = await update.message.reply_text(
-        f"🚀 Preparing to send *{count}* views to `{channel}/{post_id}`...\n"
-        "🌐 Fetching fresh proxies from API...",
+        "🚀 Starting...\n"
+        "🌐 Fetching proxies from multiple sources...",
         parse_mode="Markdown"
     )
-
-    raw_proxies = await ProxyFetcher.fetch_live_proxies()
-    if not raw_proxies:
-        await status_msg.edit_text("❌ Failed to fetch proxies from API. Try again later.")
+    
+    # Step 1: Fetch proxies
+    raw_proxies = await ProxyFetcher.fetch_proxies()
+    if len(raw_proxies) < 10:
+        await status_msg.edit_text("❌ Failed to fetch enough proxies. Try again later.")
         return ConversationHandler.END
-
-    await status_msg.edit_text(f"📡 Fetched {len(raw_proxies)} proxies. Starting to send views...")
-
+    
+    await status_msg.edit_text(f"📡 Fetched {len(raw_proxies)} proxies. Testing for working ones...")
+    
+    # Step 2: Validate proxies
+    working_proxies = await ProxyFetcher.get_working_proxies(raw_proxies, max_to_test=300)
+    if len(working_proxies) < 5:
+        await status_msg.edit_text("❌ Less than 5 working proxies found. Please try again later.")
+        return ConversationHandler.END
+    
+    await status_msg.edit_text(f"✅ Found {len(working_proxies)} working proxies. Sending {count} views...\n⏱️ This may take a minute.")
+    
+    # Step 3: Send views
     booster = TelegramBooster(channel, post_id, concurrency=MAX_CONCURRENT)
-    # Use 'http' as the default proxy type
-    sent = await booster.send_views(raw_proxies, "http", count)
-
+    sent = await booster.send_views(working_proxies, count)
+    
     await status_msg.edit_text(
         f"✅ *Complete!*\n"
         f"Successfully sent {sent} out of {count} views.\n"
         f"Success rate: {sent/count*100:.1f}%\n\n"
-        f"Use /start to try another post.",
+        f"*Note*: If views didn't increase, Telegram may have patched this method.\n"
+        f"Use /start to try again.",
         parse_mode="Markdown"
     )
     return ConversationHandler.END
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Cancelled. Use /start to begin again.")
+    await update.message.reply_text("Cancelled.")
     return ConversationHandler.END
 
 def main():
     logging.basicConfig(level=logging.INFO)
     app = Application.builder().token(BOT_TOKEN).build()
-
+    
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
         states={
@@ -222,7 +269,7 @@ def main():
         fallbacks=[CommandHandler("cancel", cancel)],
     )
     app.add_handler(conv_handler)
-
+    
     logging.info("Bot started. Polling...")
     app.run_polling()
 
