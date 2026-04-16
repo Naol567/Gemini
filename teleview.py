@@ -14,7 +14,8 @@ SOURCES = [
     "https://raw.githubusercontent.com/Zaeem20/FREE_PROXIES_LIST/master/socks5.txt",
     "https://proxyspace.pro/socks5.txt",
     "https://api.openproxylist.xyz/socks5.txt",
-    "https://raw.githubusercontent.com/ShiftyTR/Proxy-List/master/socks5.txt"
+    "https://raw.githubusercontent.com/ShiftyTR/Proxy-List/master/socks5.txt",
+    "https://raw.githubusercontent.com/jetkai/proxy-list/main/online-proxies/txt/proxies-socks5.txt"
 ]
 
 class ViewEngine:
@@ -24,10 +25,11 @@ class ViewEngine:
         self.success, self.start_views, self.current_views = 0, 0, 0
         self.start_time = None
         self.proxies = []
-        self.used_proxies = {} # {proxy: timestamp} - ለጊዜው የታገዱ ፕሮክሲዎች
+        self.used_proxies = {} 
         self.custom_urls = []
         self.custom_ips = []
-        self.sem = asyncio.Semaphore(2500)
+        # የፍጥነት ጣሪያውን ከፍ አድርገነዋል
+        self.sem = asyncio.Semaphore(4000) 
 
     async def get_views(self):
         try:
@@ -45,19 +47,19 @@ class ViewEngine:
         all_srcs = SOURCES + self.custom_urls
         temp = self.custom_ips.copy()
         async with aiohttp.ClientSession() as s:
-            for url in all_srcs:
-                try:
-                    async with s.get(url, timeout=10) as r:
+            # Parallel Scraping ለፈጣን ፕሮክሲ አሰባሰብ
+            tasks = [s.get(url, timeout=10) for url in all_srcs]
+            responses = await asyncio.gather(*tasks, return_exceptions=True)
+            for r in responses:
+                if isinstance(r, aiohttp.ClientResponse):
+                    try:
                         text = await r.text()
                         found = re.findall(r"\d{1,3}(?:\.\d{1,3}){3}(?::\d{1,5})?", text)
                         temp.extend([('socks5', p) for p in found])
-                except: pass
+                    except: pass
         
-        # 10 ደቂቃ ያለፋቸውን ፕሮክሲዎች መልሶ መጠቀም እንዲቻል ማጽዳት
         now = time.time()
         self.used_proxies = {p: t for p, t in self.used_proxies.items() if now - t < 600}
-        
-        # ጥቅም ላይ ያልዋሉትን ብቻ መለየት
         available = [p for p in temp if p[1] not in self.used_proxies]
         self.proxies = list(set(available))
         random.shuffle(self.proxies)
@@ -66,20 +68,20 @@ class ViewEngine:
         async with self.sem:
             if not self.is_running: return
             try:
+                # Connection Timeout ቀንሰነዋል (ፈጣን ያልሆኑትን ፕሮክሲዎች ወዲያው ይተዋል)
                 conn = ProxyConnector.from_url(f"{pt}://{p}")
                 h = {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    'User-Agent': 'Mozilla/5.0 (Linux; Android 10; SM-G960F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36',
                     'Referer': f'https://t.me/{self.channel}/{self.post_id}?embed=1',
                     'X-Requested-With': 'XMLHttpRequest'
                 }
-                async with aiohttp.ClientSession(connector=conn, timeout=aiohttp.ClientTimeout(total=5, connect=2)) as s:
+                async with aiohttp.ClientSession(connector=conn, timeout=aiohttp.ClientTimeout(total=4, connect=2)) as s:
                     async with s.get(f"https://t.me/{self.channel}/{self.post_id}?embed=1", headers=h) as r:
                         token = re.search(r'data-view="([^"]+)"', await r.text())
                         if token:
                             async with s.post(f"https://t.me/v/?views={token.group(1)}", headers=h) as vr:
                                 if "true" in await vr.text():
                                     self.success += 1
-                                    # ቪው የጨመረ ፕሮክሲን ለ10 ደቂቃ ማገድ
                                     self.used_proxies[p] = time.time()
             except: pass
 
@@ -98,34 +100,34 @@ async def work(msg):
         elapsed = time.time() - engine.start_time
         speed = int(added / (elapsed / 60)) if elapsed > 0 else 0
         
-        text = (f"🚀 **ULTRA TURBO ACTIVATED**\n"
+        text = (f"🔥 **MAXIMUM TURBO SPEED**\n"
                 f"━━━━━━━━━━━━━━━\n"
-                f"✅Views: `{engine.current_views}` | 🎯Target: `{engine.start_views + engine.target}`\n"
-                f"⚡Speed: `{speed} v/min` | 🛠Success: `{engine.success}`\n"
-                f"📡Available: `{len(engine.proxies)}` | ❄️Cooling: `{len(engine.used_proxies)}` \n"
-                f"━━━━━━━━━━━━━━━")
+                f"📈 Views: `{engine.current_views}`\n"
+                f"⚡ Speed: `{speed} v/min` | 🛠 Success: `{engine.success}`\n"
+                f"📡 Available: `{len(engine.proxies)}` | ❄️ Cool: `{len(engine.used_proxies)}` \n"
+                f"━━━━━━━━━━━━━━━\n"
+                f"💡 Tip: Speed ቀንሶ Success ከጨመረ ቴሌግራም Freeze አድርጎታል።")
         try: await msg.edit_text(text, parse_mode="Markdown")
         except: pass
         
         await engine.scrape_all()
-        tasks = [engine.hit(pt, p) for pt, p in engine.proxies[:3000]]
+        # 4000 ፕሮክሲዎች በአንዴ!
+        tasks = [engine.hit(pt, p) for pt, p in engine.proxies[:4000]]
         if tasks: await asyncio.gather(*tasks)
-        await asyncio.sleep(1)
+        await asyncio.sleep(0.5)
 
 async def add(update, context):
     if len(context.args) < 3: return
     engine.channel, engine.post_id, engine.target = context.args[0].replace("@",""), int(context.args[1]), int(context.args[2])
     engine.is_running, engine.success, engine.start_time = True, 0, time.time()
     engine.start_views = await engine.get_views()
-    msg = await update.message.reply_text("🔥 ስራ ተጀመረ...")
+    msg = await update.message.reply_text("🚀 ፈጣን ፍጥነት እየተዘጋጀ ነው...")
     context.application.create_task(work(msg))
 
 async def reset(update, context):
     engine.used_proxies.clear()
     engine.proxies.clear()
-    engine.custom_ips.clear()
-    engine.custom_urls.clear()
-    await update.message.reply_text("♻️ ሁሉም የፕሮክሲ ዝርዝሮች እና የCool-down ታሪክ ተሰርዟል!")
+    await update.message.reply_text("♻️ ፕሮክሲዎች ታድሰዋል!")
 
 if __name__ == "__main__":
     app = Application.builder().token(BOT_TOKEN).build()
