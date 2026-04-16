@@ -15,7 +15,8 @@ SOURCES = [
     "https://proxyspace.pro/socks5.txt",
     "https://api.openproxylist.xyz/socks5.txt",
     "https://raw.githubusercontent.com/ShiftyTR/Proxy-List/master/socks5.txt",
-    "https://raw.githubusercontent.com/jetkai/proxy-list/main/online-proxies/txt/proxies-socks5.txt"
+    "https://raw.githubusercontent.com/jetkai/proxy-list/main/online-proxies/txt/proxies-socks5.txt",
+    "https://raw.githubusercontent.com/hookzof/socks5_list/master/proxy.txt"
 ]
 
 class ViewEngine:
@@ -25,11 +26,11 @@ class ViewEngine:
         self.success, self.start_views, self.current_views = 0, 0, 0
         self.start_time = None
         self.proxies = []
-        self.used_proxies = {} 
+        self.used_proxies = {}
         self.custom_urls = []
         self.custom_ips = []
-        # የፍጥነት ጣሪያውን ከፍ አድርገነዋል
-        self.sem = asyncio.Semaphore(4000) 
+        # 5000 በአንድ ጊዜ እንዲሞክር ተደርጓል
+        self.sem = asyncio.Semaphore(5000) 
 
     async def get_views(self):
         try:
@@ -47,7 +48,6 @@ class ViewEngine:
         all_srcs = SOURCES + self.custom_urls
         temp = self.custom_ips.copy()
         async with aiohttp.ClientSession() as s:
-            # Parallel Scraping ለፈጣን ፕሮክሲ አሰባሰብ
             tasks = [s.get(url, timeout=10) for url in all_srcs]
             responses = await asyncio.gather(*tasks, return_exceptions=True)
             for r in responses:
@@ -68,16 +68,17 @@ class ViewEngine:
         async with self.sem:
             if not self.is_running: return
             try:
-                # Connection Timeout ቀንሰነዋል (ፈጣን ያልሆኑትን ፕሮክሲዎች ወዲያው ይተዋል)
                 conn = ProxyConnector.from_url(f"{pt}://{p}")
                 h = {
-                    'User-Agent': 'Mozilla/5.0 (Linux; Android 10; SM-G960F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36',
+                    'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1',
                     'Referer': f'https://t.me/{self.channel}/{self.post_id}?embed=1',
                     'X-Requested-With': 'XMLHttpRequest'
                 }
+                # Timeout ለፍጥነት ሲባል በጣም አጭር ተደርጓል
                 async with aiohttp.ClientSession(connector=conn, timeout=aiohttp.ClientTimeout(total=4, connect=2)) as s:
                     async with s.get(f"https://t.me/{self.channel}/{self.post_id}?embed=1", headers=h) as r:
-                        token = re.search(r'data-view="([^"]+)"', await r.text())
+                        res = await r.text()
+                        token = re.search(r'data-view="([^"]+)"', res)
                         if token:
                             async with s.post(f"https://t.me/v/?views={token.group(1)}", headers=h) as vr:
                                 if "true" in await vr.text():
@@ -89,9 +90,10 @@ engine = ViewEngine()
 
 async def work(msg):
     while engine.is_running:
-        engine.current_views = await engine.get_views()
-        added = max(0, engine.current_views - engine.start_views)
+        v = await engine.get_views()
+        if v > 0: engine.current_views = v
         
+        added = max(0, engine.current_views - engine.start_views)
         if engine.current_views >= (engine.start_views + engine.target):
             engine.is_running = False
             await msg.edit_text(f"✅ ተጠናቋል!\nViews: {engine.current_views}")
@@ -100,39 +102,37 @@ async def work(msg):
         elapsed = time.time() - engine.start_time
         speed = int(added / (elapsed / 60)) if elapsed > 0 else 0
         
-        text = (f"🔥 **MAXIMUM TURBO SPEED**\n"
+        text = (f"☢️ **5000 PROXY EXTREME MODE**\n"
                 f"━━━━━━━━━━━━━━━\n"
-                f"📈 Views: `{engine.current_views}`\n"
-                f"⚡ Speed: `{speed} v/min` | 🛠 Success: `{engine.success}`\n"
-                f"📡 Available: `{len(engine.proxies)}` | ❄️ Cool: `{len(engine.used_proxies)}` \n"
-                f"━━━━━━━━━━━━━━━\n"
-                f"💡 Tip: Speed ቀንሶ Success ከጨመረ ቴሌግራም Freeze አድርጎታል።")
+                f"📈 Current: `{engine.current_views}`\n"
+                f"⚡ Speed: `{speed} views/min` \n"
+                f"🛠 Success: `{engine.success}`\n"
+                f"📡 Pool: `{len(engine.proxies)}` | ❄️ Cool: `{len(engine.used_proxies)}` \n"
+                f"━━━━━━━━━━━━━━━")
         try: await msg.edit_text(text, parse_mode="Markdown")
         except: pass
         
         await engine.scrape_all()
-        # 4000 ፕሮክሲዎች በአንዴ!
-        tasks = [engine.hit(pt, p) for pt, p in engine.proxies[:4000]]
-        if tasks: await asyncio.gather(*tasks)
-        await asyncio.sleep(0.5)
+        # 5000 ፕሮክሲዎችን በአንዴ መርጨት
+        tasks = [engine.hit(pt, p) for pt, p in engine.proxies[:5000]]
+        if tasks:
+            await asyncio.gather(*tasks)
+        
+        # ለፍጥነት ሲባል ማረፊያ (sleep) ቀንሰነዋል
+        await asyncio.sleep(0.1)
 
 async def add(update, context):
     if len(context.args) < 3: return
     engine.channel, engine.post_id, engine.target = context.args[0].replace("@",""), int(context.args[1]), int(context.args[2])
     engine.is_running, engine.success, engine.start_time = True, 0, time.time()
     engine.start_views = await engine.get_views()
-    msg = await update.message.reply_text("🚀 ፈጣን ፍጥነት እየተዘጋጀ ነው...")
+    msg = await update.message.reply_text("☢️ 5000 Proxy Extreme ስራ ተጀመረ...")
     context.application.create_task(work(msg))
-
-async def reset(update, context):
-    engine.used_proxies.clear()
-    engine.proxies.clear()
-    await update.message.reply_text("♻️ ፕሮክሲዎች ታድሰዋል!")
 
 if __name__ == "__main__":
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("add", add))
-    app.add_handler(CommandHandler("reset", reset))
+    app.add_handler(CommandHandler("reset", lambda u,c: (engine.used_proxies.clear(), engine.proxies.clear())))
     app.add_handler(CommandHandler("stop", lambda u,c: setattr(engine,'is_running',False)))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, lambda u,c: engine.custom_urls.append(u.message.text)))
     app.run_polling()
