@@ -1,126 +1,76 @@
-import aiohttp, asyncio
-from re import search, compile
-from aiohttp_socks import ProxyConnector
-from argparse import ArgumentParser
-from os import name
-from threading import Thread
-from time import sleep
+import asyncio
+import aiohttp
+import re
 import random
+from aiohttp_socks import ProxyConnector
+import os
 
-user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-REGEX = compile(r"\d{1,3}(?:\.\d{1,3}){3}(?::\d{1,5})?")
-
-# ከፍተኛ ቁጥር ያላቸው የፕሮክሲ ምንጮች
-AUTO_PROXY_SOURCES = [
-    "https://api.proxyscrape.com/v2/?request=getproxies&protocol=http&timeout=10000",
-    "https://api.proxyscrape.com/v2/?request=getproxies&protocol=socks4&timeout=10000",
+SOURCES = [
     "https://api.proxyscrape.com/v2/?request=getproxies&protocol=socks5&timeout=10000",
-    "https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/http.txt",
-    "https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/socks4.txt",
     "https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/socks5.txt",
-    "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/http.txt",
-    "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/socks4.txt",
-    "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/socks5.txt",
-    "https://raw.githubusercontent.com/officialputuid/KangProxy/KangProxy/http/http.txt",
-    "https://raw.githubusercontent.com/officialputuid/KangProxy/KangProxy/socks4/socks4.txt",
-    "https://raw.githubusercontent.com/officialputuid/KangProxy/KangProxy/socks5/socks5.txt",
-    "https://raw.githubusercontent.com/roosterkid/openproxylist/main/HTTPS_RAW.txt",
-    "https://raw.githubusercontent.com/ShiftyTR/Proxy-List/master/http.txt",
-    "https://raw.githubusercontent.com/ShiftyTR/Proxy-List/master/socks4.txt",
-    "https://raw.githubusercontent.com/ShiftyTR/Proxy-List/master/socks5.txt",
-    "https://proxyspace.pro/http.txt",
-    "https://proxyspace.pro/socks4.txt",
-    "https://proxyspace.pro/socks5.txt",
-    "https://raw.githubusercontent.com/Zaeem20/FREE_PROXIES_LIST/master/http.txt",
-    "https://raw.githubusercontent.com/Zaeem20/FREE_PROXIES_LIST/master/socks4.txt",
     "https://raw.githubusercontent.com/Zaeem20/FREE_PROXIES_LIST/master/socks5.txt",
-    "https://raw.githubusercontent.com/Anonym0usWork1221/Free-Proxies/main/proxy_list.txt",
-    "https://raw.githubusercontent.com/rdavydov/proxy-list/main/proxies/http.txt",
-    "https://raw.githubusercontent.com/rdavydov/proxy-list/main/proxies/socks4.txt",
-    "https://raw.githubusercontent.com/rdavydov/proxy-list/main/proxies/socks5.txt"
+    "https://raw.githubusercontent.com/officialputuid/KangProxy/KangProxy/socks5/socks5.txt",
+    "https://proxyspace.pro/socks5.txt"
 ]
 
-class Telegram:
-    def __init__(self, channel: str, post: int, amount: int):
-        self.tasks = 1000  # በአንድ ጊዜ 1000 ሙከራ (Aggressive)
+class SMMUltra:
+    def __init__(self, channel, post, target):
         self.channel = channel
         self.post = post
-        self.amount = amount
-        self.sucsess_sent = 0
-        self.proxy_error = 0
-        self.proxies = []
+        self.target = target
+        self.success = 0
+        self.sem = asyncio.Semaphore(1000)
+        self.uas = [
+            "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4.1 Mobile/15E148 Safari/604.1",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+        ]
 
-    async def scrap_all(self):
-        self.proxies.clear()
-        async with aiohttp.ClientSession() as session:
-            tasks = [self.fetch(session, url) for url in AUTO_PROXY_SOURCES]
-            await asyncio.gather(*tasks)
-        self.proxies = list(set(self.proxies))
-        random.shuffle(self.proxies)
+    async def get_proxies(self):
+        proxies = []
+        async with aiohttp.ClientSession() as s:
+            for url in SOURCES:
+                try:
+                    async with s.get(url, timeout=10) as r:
+                        text = await r.text()
+                        found = re.findall(r"\d{1,3}(?:\.\d{1,3}){3}(?::\d{1,5})?", text)
+                        proxies.extend([('socks5', p) for p in found])
+                except: pass
+        return list(set(proxies))
 
-    async def fetch(self, session, url):
-        try:
-            async with session.get(url, timeout=10) as resp:
-                text = await resp.text()
-                found = REGEX.findall(text)
-                p_type = 'socks5' if 'socks5' in url else ('socks4' if 'socks4' in url else 'http')
-                for p in found:
-                    self.proxies.append((p_type, p))
-        except: pass
+    async def send_view(self, ptype, proxy):
+        async with self.sem:
+            if self.success >= self.target: return
+            try:
+                conn = ProxyConnector.from_url(f"{ptype}://{proxy}")
+                async with aiohttp.ClientSession(connector=conn, timeout=aiohttp.ClientTimeout(total=10, connect=3)) as s:
+                    headers = {
+                        'User-Agent': random.choice(self.uas),
+                        'Referer': f'https://t.me/{self.channel}/{self.post}?embed=1',
+                        'X-Requested-With': 'XMLHttpRequest'
+                    }
+                    async with s.get(f"https://t.me/{self.channel}/{self.post}?embed=1", headers=headers) as r:
+                        token = re.search(r'data-view="([^"]+)"', await r.text())
+                        if token:
+                            async with s.post(f"https://t.me/v/?views={token.group(1)}", headers=headers) as vr:
+                                if "true" in await vr.text(): self.success += 1
+            except: pass
 
-    async def request(self, proxy: str, proxy_type: str):
-        if self.sucsess_sent >= self.amount: return
-        try:
-            connector = ProxyConnector.from_url(f'{proxy_type}://{proxy}')
-            async with aiohttp.ClientSession(connector=connector, cookie_jar=aiohttp.CookieJar(unsafe=True)) as session:
-                async with session.get(
-                    f'https://t.me/{self.channel}/{self.post}?embed=1&mode=tme', 
-                    headers={'referer': f'https://t.me/{self.channel}', 'user-agent': user_agent},
-                    timeout=7
-                ) as response:
-                    html = await response.text()
-                    token = search(r'data-view="([^"]+)"', html)
-                    if token:
-                        async with session.post(
-                            f'https://t.me/v/?views={token.group(1)}', 
-                            headers={
-                                'referer': f'https://t.me/{self.channel}/{self.post}?embed=1&mode=tme',
-                                'user-agent': user_agent, 'x-requested-with': 'XMLHttpRequest'
-                            }, timeout=7
-                        ) as v_resp:
-                            if (await v_resp.text() == "true"):
-                                self.sucsess_sent += 1
-        except:
-            self.proxy_error += 1
-
-    async def run_auto_tasks(self):
-        while self.sucsess_sent < self.amount:
-            await self.scrap_all()
-            print(f" [!] {len(self.proxies)} ፕሮክሲዎች ተገኝተዋል። በከፍተኛ ፍጥነት እየተላኩ ነው...")
-            
-            for i in range(0, len(self.proxies), self.tasks):
-                if self.sucsess_sent >= self.amount: break
-                batch = self.proxies[i:i+self.tasks]
-                await asyncio.gather(*[self.request(p, pt) for pt, p in batch])
-            
-            self.proxies.clear()
-
-    def cli(self):
-        while self.sucsess_sent < self.amount:
-            print(f"\n🔥 [ AGGRESSIVE SPEED MODE ]")
-            print(f"Target: @{self.channel}/{self.post}")
-            print(f"Success: {self.sucsess_sent} / {self.amount}")
-            print(f"Errors: {self.proxy_error}")
-            print(f"---------------------------\n")
-            sleep(5)
+    async def run(self):
+        print(f"🚀 ቦቱ ተጀምሯል! Target: {self.target} views")
+        while self.success < self.target:
+            proxies = await self.get_proxies()
+            if not proxies:
+                await asyncio.sleep(5); continue
+            random.shuffle(proxies)
+            await asyncio.gather(*[self.send_view(pt, p) for pt, p in proxies])
+            print(f"📈 አሁን የደረሰው ቪው: {self.success}")
+            await asyncio.sleep(2)
 
 if __name__ == "__main__":
-    parser = ArgumentParser()
-    parser.add_argument('-c', '--channel', required=True)
-    parser.add_argument('-pt', '--post', required=True, type=int)
-    parser.add_argument('-a', '--amount', default=5000, type=int)
-    args = parser.parse_args()
+    # እዚህ ጋር የቻናልህን እና የፖስቱን መረጃ ቀይር
+    target_channel = "xauusd_x1"
+    target_post = 164
+    target_amount = 5000 
 
-    api = Telegram(args.channel, args.post, args.amount)
-    Thread(target=api.cli, daemon=True).start()
-    asyncio.run(api.run_auto_tasks())
+    bot = SMMUltra(target_channel, target_post, target_amount)
+    asyncio.run(bot.run())
