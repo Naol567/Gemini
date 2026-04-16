@@ -6,12 +6,15 @@ import time
 from datetime import timedelta
 from aiohttp_socks import ProxyConnector
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
+from telegram.ext import (
+    Application, CommandHandler, MessageHandler, filters,
+    ContextTypes, CallbackQueryHandler, ConversationHandler
+)
 
 # ================= CONFIG =================
 BOT_TOKEN = "8759135008:AAFc5a-Ek1RrtmAwd7vWK04kdyt21TNgE4I"
 
-# 30+ proxy sources (will auto-refresh every 10 seconds)
+# 30+ proxy sources (auto-refresh every 10 seconds)
 PROXY_SOURCES = [
     "https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/socks5.txt",
     "https://raw.githubusercontent.com/Thordata/awesome-free-proxy-list/main/proxies/socks5.txt",
@@ -45,18 +48,21 @@ PROXY_SOURCES = [
     "https://raw.githubusercontent.com/ALIILAPRO/Proxy/main/socks5.txt",
 ]
 
-# Performance settings for ONE MINUTE TARGET
-WORKER_COUNT = 1500            # Extreme concurrency
-PROXY_REFRESH_SECONDS = 5      # Refresh every 5 seconds
-REQUEST_TIMEOUT = 2            # Ultra-fast timeout
+# Performance settings
+WORKER_COUNT = 1500
+PROXY_REFRESH_SECONDS = 5
+REQUEST_TIMEOUT = 2
 CONNECT_TIMEOUT = 1
-MAX_PROXY_FAILURES = 1         # Remove proxy after 1 failure
+MAX_PROXY_FAILURES = 1
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
     "Accept": "text/html,application/xhtml+xml",
     "Referer": "https://t.me/",
 }
+
+# Conversation states
+WAITING_FOR_LINK, WAITING_FOR_TARGET = range(2)
 
 class ViewEngine:
     def __init__(self):
@@ -75,7 +81,6 @@ class ViewEngine:
         self.sem = asyncio.Semaphore(WORKER_COUNT)
 
     async def get_views(self):
-        """Fetch current view count from embed page"""
         try:
             async with aiohttp.ClientSession(headers=HEADERS) as s:
                 url = f"https://t.me/{self.channel}/{self.post_id}?embed=1"
@@ -96,7 +101,6 @@ class ViewEngine:
         return 0
 
     async def scrape_all_proxies(self):
-        """Fetch proxies from all sources in parallel"""
         new_proxies = set()
         async def fetch(url):
             try:
@@ -117,7 +121,6 @@ class ViewEngine:
         return len(self.proxies)
 
     async def hit(self, proxy_type, proxy_str):
-        """Send one view request through a proxy"""
         async with self.sem:
             if not self.is_running:
                 return False
@@ -149,7 +152,6 @@ class ViewEngine:
             return False
 
     async def worker(self):
-        """Worker that consumes proxies from queue"""
         while self.is_running:
             try:
                 proxy = await asyncio.wait_for(self.proxy_queue.get(), timeout=0.3)
@@ -161,7 +163,6 @@ class ViewEngine:
                 continue
 
     async def proxy_refresher(self):
-        """Background task to refresh proxy list and refill queue"""
         last_refresh = 0
         while self.is_running:
             now = time.time()
@@ -180,67 +181,39 @@ class ViewEngine:
             await asyncio.sleep(2)
 
     async def run(self, msg, target_minutes=1):
-        """Main booster with time limit (default 1 minute)"""
-        # Initial proxy fetch
         await self.scrape_all_proxies()
         for proxy in self.proxies:
             await self.proxy_queue.put(proxy)
-        
-        # Start workers
         self.workers = [asyncio.create_task(self.worker()) for _ in range(WORKER_COUNT)]
         refresher = asyncio.create_task(self.proxy_refresher())
-        
         deadline = time.time() + (target_minutes * 60)
-        
         while self.is_running:
             self.current_views = await self.get_views()
             added = max(0, self.current_views - self.start_views)
-            
-            # Check target reached or time expired
             if self.current_views >= (self.start_views + self.target):
                 self.is_running = False
-                await msg.edit_text(
-                    f"✅ **Target reached in {int(time.time() - self.start_time)} seconds!**\n"
-                    f"Views: {self.current_views}\n"
-                    f"Successful hits: {self.success}"
-                )
+                await msg.edit_text(f"✅ Target reached in {int(time.time() - self.start_time)} sec!\nViews: {self.current_views}\nHits: {self.success}")
                 break
             if time.time() > deadline:
                 self.is_running = False
-                await msg.edit_text(
-                    f"⏰ **Time limit ({target_minutes} min) reached!**\n"
-                    f"Views: {self.current_views} / {self.start_views + self.target}\n"
-                    f"Successful hits: {self.success}"
-                )
+                await msg.edit_text(f"⏰ Time limit ({target_minutes} min) reached!\nViews: {self.current_views} / {self.start_views + self.target}\nHits: {self.success}")
                 break
-            
-            # Progress update every second
             prog = min(100, int((added / self.target) * 100)) if self.target > 0 else 0
             bar = "▓" * (prog // 10) + "░" * (10 - (prog // 10))
             elapsed = time.time() - self.start_time
             speed = int(added / (elapsed / 60)) if elapsed > 0 else 0
-            text = (f"🚀 **ULTRA BOOSTER (1 MIN TARGET)**\n"
-                    f"━━━━━━━━━━━━━━━━━━\n"
-                    f"📊 [{bar}] {prog}%\n"
-                    f"✅ Views: `{self.current_views}` | 🎯 `{self.start_views + self.target}`\n"
-                    f"⚡ Speed: `{speed} views/min`\n"
-                    f"🛠 Hits: `{self.success}`\n"
-                    f"🌐 Proxies: `{self.proxy_queue.qsize()}`")
+            text = (f"🚀 **ULTRA BOOSTER (1 MIN)**\n━━━━━━━━━━━━\n📊 [{bar}] {prog}%\n✅ Views: `{self.current_views}` | 🎯 `{self.start_views + self.target}`\n⚡ Speed: `{speed} v/min`\n🛠 Hits: `{self.success}`\n🌐 Proxies: `{self.proxy_queue.qsize()}`")
             try:
                 await msg.edit_text(text, parse_mode="Markdown")
             except:
                 pass
             await asyncio.sleep(1)
-        
         refresher.cancel()
         for w in self.workers:
             w.cancel()
         await asyncio.gather(*self.workers, return_exceptions=True)
 
 engine = ViewEngine()
-
-# Store user data temporarily
-user_data = {}
 
 # ================= BOT HANDLERS =================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -251,53 +224,50 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "I will delete your link and ask for target views.",
         parse_mode="Markdown"
     )
+    return WAITING_FOR_LINK
 
 async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Receives link, deletes it, asks for target"""
     message = update.message
     text = message.text.strip()
-    
-    # Delete the user's message immediately
-    await message.delete()
-    
-    # Extract channel and post ID
-    match = re.search(r'(?:https?://)?(?:t\.me/|@)?([a-zA-Z0-9_]+)/(\d+)', text)
+    await message.delete()  # Delete the user's link message
+
+    # Improved regex: allows letters, numbers, underscores, hyphens, dots in channel name
+    match = re.search(r'(?:https?://)?(?:t\.me/|@)?([a-zA-Z0-9_\-\.]+)/(\d+)', text)
     if not match:
-        await message.reply_text("❌ Invalid link format. Send like: `https://t.me/channel/123`", parse_mode="Markdown")
-        return
-    
+        await message.reply_text("❌ Invalid link format. Send like: `https://t.me/channel-name/123`", parse_mode="Markdown")
+        return WAITING_FOR_LINK
+
     channel = match.group(1)
     post_id = int(match.group(2))
-    
-    # Store in context.user_data
     context.user_data['channel'] = channel
     context.user_data['post_id'] = post_id
-    
-    # Ask for target views
+
+    # Get current views (optional)
+    engine.channel = channel
+    engine.post_id = post_id
+    current = await engine.get_views()
     await message.reply_text(
-        f"✅ **Link received:** `{channel}/{post_id}`\n\n"
-        f"📊 **Current views:** {await engine.get_views() if engine.channel else '?'}\n\n"
+        f"✅ **Link received:** `{channel}/{post_id}`\n"
+        f"📊 **Current views:** `{current}`\n\n"
         f"Now send the **target number of views** (e.g., `5000`)\n"
         f"I will try to reach it **within 1 minute** using 2500+ proxies.",
         parse_mode="Markdown"
     )
+    return WAITING_FOR_TARGET
 
 async def handle_target(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Receives target number, asks for confirmation"""
     text = update.message.text.strip()
     if not text.isdigit():
         await update.message.reply_text("Please send a valid number (e.g., `5000`)", parse_mode="Markdown")
-        return
-    
+        return WAITING_FOR_TARGET
+
     target = int(text)
     context.user_data['target'] = target
-    
-    # Ask for confirmation with inline buttons
+
     keyboard = [
         [InlineKeyboardButton("✅ YES, START", callback_data="confirm_yes")],
         [InlineKeyboardButton("❌ CANCEL", callback_data="confirm_no")]
     ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text(
         f"⚠️ **CONFIRMATION**\n\n"
         f"Channel: `{context.user_data['channel']}`\n"
@@ -307,23 +277,21 @@ async def handle_target(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"⏱️ Will stop after 1 minute.\n\n"
         f"**Do you want to start?**",
         parse_mode="Markdown",
-        reply_markup=reply_markup
+        reply_markup=InlineKeyboardMarkup(keyboard)
     )
+    return WAITING_FOR_TARGET  # Stay in this state until callback
 
 async def confirm_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    
     if query.data == "confirm_yes":
         channel = context.user_data.get('channel')
         post_id = context.user_data.get('post_id')
         target = context.user_data.get('target')
-        
         if not all([channel, post_id, target]):
-            await query.edit_message_text("❌ Missing data. Please send link again.")
-            return
-        
-        # Configure engine
+            await query.edit_message_text("❌ Missing data. Please use /start again.")
+            return ConversationHandler.END
+
         engine.channel = channel
         engine.post_id = post_id
         engine.target = target
@@ -331,41 +299,35 @@ async def confirm_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         engine.success = 0
         engine.start_time = time.time()
         engine.start_views = await engine.get_views()
-        
         if engine.start_views == 0:
             await query.edit_message_text("⚠️ Could not fetch current views. Make sure post exists and is public.")
             engine.is_running = False
-            return
-        
-        # Send initial message
-        msg = await query.edit_message_text(
-            f"🔥 **BOOSTER ACTIVATED**\n"
-            f"Target: {target} views\n"
-            f"Time limit: 1 minute\n"
-            f"Starting...",
-            parse_mode="Markdown"
-        )
-        
-        # Run booster with 1 minute limit
+            return ConversationHandler.END
+
+        msg = await query.edit_message_text("🔥 **BOOSTER ACTIVATED**\nStarting...", parse_mode="Markdown")
         asyncio.create_task(engine.run(msg, target_minutes=1))
-        
     else:
-        await query.edit_message_text("❌ Cancelled. Send a new link to start over.")
+        await query.edit_message_text("❌ Cancelled. Use /start to begin again.")
+    return ConversationHandler.END
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     engine.is_running = False
     await update.message.reply_text("🛑 Boosting stopped (if running).")
+    return ConversationHandler.END
 
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
-    
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("cancel", cancel))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_link))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_target))
+    conv_handler = ConversationHandler(
+        entry_points=[CommandHandler("start", start)],
+        states={
+            WAITING_FOR_LINK: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_link)],
+            WAITING_FOR_TARGET: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_target)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+    )
+    app.add_handler(conv_handler)
     app.add_handler(CallbackQueryHandler(confirm_callback))
-    
-    print("🚀 BOT STARTED - Link deletion + confirmation + 1-minute target")
+    print("🚀 BOT STARTED - Fixed regex and conversation handler")
     print("⚠️ WARNING: This method does NOT increase real view counts (Telegram patched it).")
     app.run_polling()
 
