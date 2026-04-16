@@ -9,11 +9,10 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
 # ================= CONFIG =================
-BOT_TOKEN = "8759135008:AAFc5a-Ek1RrtmAwd7vWK04kdyt21TNgE4I"
+BOT_TOKEN = "YOUR_BOT_TOKEN_HERE"
 
-# 30+ proxy sources (constantly updated)
-SOURCES = [
-    # SOCKS5 lists (high quality)
+# List of ULTIMATE proxy sources (30+ sources for maximum proxy pool)
+PROXY_SOURCES = [
     "https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/socks5.txt",
     "https://raw.githubusercontent.com/Thordata/awesome-free-proxy-list/main/proxies/socks5.txt",
     "https://raw.githubusercontent.com/Ian-Lusule/Proxies/main/proxies/socks5.txt",
@@ -29,7 +28,6 @@ SOURCES = [
     "https://raw.githubusercontent.com/saschazesiger/Free-Proxies/master/socks5.txt",
     "https://raw.githubusercontent.com/officialputuid/tools/main/Proxy/socks5.txt",
     "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/socks5.txt",
-    # API sources
     "https://api.proxyscrape.com/v2/?request=getproxies&protocol=socks5&timeout=10000",
     "https://proxylist.geonode.com/api/proxy-list?limit=500&page=1&sort_by=lastChecked&sort_type=desc&protocols=socks5",
     "https://proxyspace.pro/socks5.txt",
@@ -45,24 +43,19 @@ SOURCES = [
     "https://raw.githubusercontent.com/clarketm/Proxy-list/master/socks5.txt",
     "https://raw.githubusercontent.com/sunny9577/proxy-scraper/master/proxies/socks5.txt",
     "https://raw.githubusercontent.com/ALIILAPRO/Proxy/main/socks5.txt",
-    "https://raw.githubusercontent.com/UserR3X/proxy-list/main/socks5.txt",
 ]
 
-# Performance tuning
-WORKER_COUNT = 500          # Concurrent workers (adjust based on your network)
-PROXY_REFRESH_SECONDS = 20  # Refresh proxy list every 20 seconds
-MAX_PROXY_FAILURES = 2      # Remove proxy after 2 failures
-REQUEST_TIMEOUT = 5
-CONNECT_TIMEOUT = 3
+# Performance settings for LIGHT SPEED
+WORKER_COUNT = 1000            # Ultra-high concurrency (adjust based on your network)
+PROXY_REFRESH_SECONDS = 10     # Refresh proxy list every 10 seconds
+REQUEST_TIMEOUT = 3            # Aggressive timeout for speed
+CONNECT_TIMEOUT = 2
+MAX_PROXY_FAILURES = 1         # Remove proxy after 1 failure
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.9",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    "Accept": "text/html,application/xhtml+xml",
     "Referer": "https://t.me/",
-    "Sec-Fetch-Dest": "document",
-    "Sec-Fetch-Mode": "navigate",
-    "Sec-Fetch-Site": "same-origin",
 }
 
 class ViewEngine:
@@ -71,68 +64,54 @@ class ViewEngine:
         self.channel = self.post_id = self.target = ""
         self.success = self.start_views = self.current_views = 0
         self.start_time = None
-        self.proxies = []           # list of (type, proxy_str)
-        self.proxy_failures = {}    # track failures per proxy
+        self.proxies = []               # list of (type, proxy_str)
+        self.proxy_failures = {}        # track failures per proxy
         self.proxy_queue = asyncio.Queue()
         self.workers = []
         self.sem = asyncio.Semaphore(WORKER_COUNT)
 
     async def get_views(self):
-        """Get current view count from embed page"""
+        """Fetch current view count from embed page"""
         try:
             async with aiohttp.ClientSession(headers=HEADERS) as s:
                 url = f"https://t.me/{self.channel}/{self.post_id}?embed=1"
                 async with s.get(url, timeout=5) as r:
                     html = await r.text()
-                    # Multiple patterns for robustness
                     patterns = [
                         r'<span class="tgme_widget_message_views">([^<]+)</span>',
                         r'data-views="([^"]+)"',
                         r'<div class="tgme_widget_message_views">([^<]+)</div>',
-                        r'viewCount":"([^"]+)"',
                     ]
                     for pat in patterns:
                         m = re.search(pat, html)
                         if m:
                             v = m.group(1).replace('K', '000').replace('M', '000000').replace('.', '')
                             return int(''.join(filter(str.isdigit, v)))
-        except Exception as e:
-            print(f"Get views error: {e}")
+        except:
+            return 0
         return 0
 
     async def scrape_all_proxies(self):
-        """Fetch proxies from all sources in parallel"""
+        """Fetch proxies from all sources in parallel for maximum speed"""
         new_proxies = set()
         async def fetch(url):
             try:
                 async with aiohttp.ClientSession() as s:
-                    async with s.get(url, timeout=10) as r:
-                        if "application/json" in r.headers.get("Content-Type", ""):
-                            data = await r.json()
-                            items = data.get('data') or data.get('proxies') or data.get('list') or []
-                            for item in items:
-                                if isinstance(item, dict):
-                                    ip = item.get('ip') or item.get('host')
-                                    port = item.get('port')
-                                    if ip and port:
-                                        new_proxies.add(('socks5', f"{ip}:{port}"))
-                        else:
-                            text = await r.text()
-                            # Match IP:PORT
-                            found = re.findall(r"\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}:\d{1,5}", text)
-                            for proxy in found:
-                                new_proxies.add(('socks5', proxy))
-            except Exception:
+                    async with s.get(url, timeout=5) as r:
+                        text = await r.text()
+                        found = re.findall(r"\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}:\d{1,5}", text)
+                        for proxy in found:
+                            new_proxies.add(('socks5', proxy))
+            except:
                 pass
         # Fetch all sources concurrently
-        await asyncio.gather(*[fetch(url) for url in SOURCES])
+        await asyncio.gather(*[fetch(url) for url in PROXY_SOURCES])
         self.proxies = list(new_proxies)
         random.shuffle(self.proxies)
-        # Initialize failure counters for new proxies
+        # Initialize failure counters
         for p in self.proxies:
             if p not in self.proxy_failures:
                 self.proxy_failures[p] = 0
-        print(f"✅ Scraped {len(self.proxies)} unique proxies")
         return len(self.proxies)
 
     async def hit(self, proxy_type, proxy_str):
@@ -140,7 +119,6 @@ class ViewEngine:
         async with self.sem:
             if not self.is_running:
                 return False
-            # Skip if proxy has too many failures
             if self.proxy_failures.get((proxy_type, proxy_str), 0) >= MAX_PROXY_FAILURES:
                 return False
             try:
@@ -172,12 +150,12 @@ class ViewEngine:
         """Worker that consumes proxies from queue"""
         while self.is_running:
             try:
-                proxy = await asyncio.wait_for(self.proxy_queue.get(), timeout=1.0)
+                proxy = await asyncio.wait_for(self.proxy_queue.get(), timeout=0.5)
                 await self.hit(*proxy)
                 self.proxy_queue.task_done()
             except asyncio.TimeoutError:
                 continue
-            except Exception:
+            except:
                 continue
 
     async def proxy_refresher(self):
@@ -187,20 +165,19 @@ class ViewEngine:
             now = time.time()
             if now - last_refresh >= PROXY_REFRESH_SECONDS:
                 await self.scrape_all_proxies()
-                # Remove failed proxies from queue by rebuilding
+                # Rebuild queue with fresh proxies
                 self.proxy_queue = asyncio.Queue()
                 for proxy in self.proxies:
                     if self.proxy_failures.get(proxy, 0) < MAX_PROXY_FAILURES:
                         await self.proxy_queue.put(proxy)
                 last_refresh = now
-                print(f"🔄 Queue size: {self.proxy_queue.qsize()}")
             else:
-                # If queue is low, top up
+                # Top up queue if low
                 if self.proxy_queue.qsize() < 100 and self.proxies:
                     for proxy in self.proxies[:200]:
                         if self.proxy_failures.get(proxy, 0) < MAX_PROXY_FAILURES:
                             await self.proxy_queue.put(proxy)
-            await asyncio.sleep(5)
+            await asyncio.sleep(2)
 
     async def run(self, msg):
         # Initial proxy fetch
@@ -228,8 +205,7 @@ class ViewEngine:
             elapsed = time.time() - self.start_time
             speed = int(added / (elapsed / 60)) if elapsed > 0 else 0
             rem = str(timedelta(seconds=int((self.target - added) / max(speed/60, 1)))) if added > 0 else "..."
-            success_rate = int((self.success / max(self.success + self.proxy_queue.qsize(), 1)) * 100)
-            text = (f"🚀 **ULTRA PROXY BOOSTER**\n"
+            text = (f"🚀 **ULTIMATE PROXY BOOSTER**\n"
                     f"━━━━━━━━━━━━━━━━━━\n"
                     f"📊 [{bar}] {prog}%\n"
                     f"✅ Views: `{self.current_views}` | 🎯 `{self.start_views + self.target}`\n"
@@ -237,8 +213,7 @@ class ViewEngine:
                     f"🕒 Remaining: `{rem}`\n"
                     f"━━━━━━━━━━━━━━━━━━\n"
                     f"🛠 Success: `{self.success}`\n"
-                    f"🌐 Proxies in queue: `{self.proxy_queue.qsize()}`\n"
-                    f"📡 Success rate: `{success_rate}%`")
+                    f"🌐 Proxies in queue: `{self.proxy_queue.qsize()}`")
             try:
                 await msg.edit_text(text, parse_mode="Markdown")
             except:
@@ -256,7 +231,7 @@ engine = ViewEngine()
 # ================= BOT HANDLERS =================
 async def add(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(context.args) < 3:
-        await update.message.reply_text("Usage: `/add channel post_id target`\nExample: `/add mychannel 123 5000`")
+        await update.message.reply_text("Usage: `/add channel post_id target`")
         return
     engine.channel = context.args[0].replace("@", "")
     engine.post_id = int(context.args[1])
@@ -303,6 +278,5 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("stop", stop))
     app.add_handler(CommandHandler("status", status))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_msg))
-    print("🚀 ULTRA PROXY BOOSTER STARTED")
-    print("⚠️ Remember: This method is deprecated. Real views require user accounts + official API.")
+    print("🚀 ULTIMATE PROXY BOOSTER STARTED")
     app.run_polling()
