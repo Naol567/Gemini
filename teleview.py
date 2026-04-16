@@ -5,7 +5,7 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
 # --- CONFIG ---
-BOT_TOKEN = "YOUR_BOT_TOKEN_HERE"
+BOT_TOKEN = "8759135008:AAFc5a-Ek1RrtmAwd7vWK04kdyt21TNgE4I"
 # ዋና የፕሮክሲ ምንጮች
 SOURCES = [
     "https://api.proxyscrape.com/v2/?request=getproxies&protocol=socks5&timeout=5000",
