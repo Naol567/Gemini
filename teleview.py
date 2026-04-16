@@ -5,15 +5,17 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
 # --- CONFIG ---
+# ያንተን የቦት ቶከን እዚህ አስገባ
 BOT_TOKEN = "8254387734:AAEd4VK_abdQuwgbFEiadoqj7UwlxDpmg3A"
 
-# ዋና የፕሮክሲ ምንጮች
+# ያኔ በፍጥነት እንዲሰበስብ የረዳው የፕሮክሲ ዝርዝር
 SOURCES = [
     "https://api.proxyscrape.com/v2/?request=getproxies&protocol=socks5&timeout=5000",
-    "https://proxylist.geonode.com/api/proxy-list?limit=500&page=1&sort_by=lastChecked&sort_type=desc",
     "https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/socks5.txt",
     "https://raw.githubusercontent.com/Zaeem20/FREE_PROXIES_LIST/master/socks5.txt",
-    "https://proxyspace.pro/socks5.txt"
+    "https://proxyspace.pro/socks5.txt",
+    "https://api.openproxylist.xyz/socks5.txt",
+    "https://raw.githubusercontent.com/hookzof/socks5_list/master/proxy.txt"
 ]
 
 class ViewEngine:
@@ -25,7 +27,8 @@ class ViewEngine:
         self.proxies = []
         self.custom_urls = []
         self.custom_ips = []
-        self.sem = asyncio.Semaphore(2500) # የፍጥነት ጣሪያ (Extreme Speed)
+        # ያኔ ፍጥነት የጨመረው ሴማፎር
+        self.sem = asyncio.Semaphore(2500) 
 
     async def get_views(self):
         try:
@@ -40,19 +43,16 @@ class ViewEngine:
         return 0
 
     async def scrape_all(self):
+        """ሁሉንም ምንጮች በአንዴ የሚሰበስብ"""
         all_srcs = SOURCES + self.custom_urls
         temp = self.custom_ips.copy()
         async with aiohttp.ClientSession() as s:
             for url in all_srcs:
                 try:
                     async with s.get(url, timeout=10) as r:
-                        if "application/json" in r.headers.get("Content-Type", ""):
-                            data = await r.json()
-                            for p in data.get('data', []): temp.append(('socks5', f"{p['ip']}:{p['port']}"))
-                        else:
-                            text = await r.text()
-                            found = re.findall(r"\d{1,3}(?:\.\d{1,3}){3}(?::\d{1,5})?", text)
-                            temp.extend([('socks5', p) for p in found])
+                        text = await r.text()
+                        found = re.findall(r"\d{1,3}(?:\.\d{1,3}){3}(?::\d{1,5})?", text)
+                        temp.extend([('socks5', p) for p in found])
                 except: pass
         self.proxies = list(set(temp))
         random.shuffle(self.proxies)
@@ -62,74 +62,77 @@ class ViewEngine:
             if not self.is_running: return
             try:
                 conn = ProxyConnector.from_url(f"{pt}://{p}")
+                # ያኔ የጨመርነው ወሳኝ ሴቲንግ (Headers)
+                headers = {
+                    'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15',
+                    'Referer': f'https://t.me/{self.channel}/{self.post_id}?embed=1',
+                    'X-Requested-With': 'XMLHttpRequest'
+                }
                 async with aiohttp.ClientSession(connector=conn, timeout=aiohttp.ClientTimeout(total=5, connect=2)) as s:
-                    async with s.get(f"https://t.me/{self.channel}/{self.post_id}?embed=1") as r:
-                        token = re.search(r'data-view="([^"]+)"', await r.text())
+                    async with s.get(f"https://t.me/{self.channel}/{self.post_id}?embed=1", headers=headers) as r:
+                        res = await r.text()
+                        token = re.search(r'data-view="([^"]+)"', res)
                         if token:
-                            async with s.post(f"https://t.me/v/?views={token.group(1)}", headers={'X-Requested-With': 'XMLHttpRequest'}) as vr:
-                                if "true" in await vr.text(): self.success += 1
+                            async with s.post(f"https://t.me/v/?views={token.group(1)}", headers=headers) as vr:
+                                if "true" in await vr.text():
+                                    self.success += 1
             except: pass
 
 engine = ViewEngine()
 
 async def work(msg):
     while engine.is_running:
-        engine.current_views = await engine.get_views()
+        v = await engine.get_views()
+        if v > 0: engine.current_views = v
+        
         added = max(0, engine.current_views - engine.start_views)
         if engine.current_views >= (engine.start_views + engine.target):
             engine.is_running = False
-            await msg.edit_text(f"✅ ተጠናቋል!\nቪው: {engine.current_views}")
+            await msg.edit_text(f"✅ ተጠናቋል!\nViews: {engine.current_views}")
             break
 
-        prog = min(100, int((added / engine.target) * 100)) if engine.target > 0 else 0
-        bar = "▓" * (prog // 10) + "░" * (10 - (prog // 10))
         elapsed = time.time() - engine.start_time
         speed = int(added / (elapsed / 60)) if elapsed > 0 else 0
-        rem_time = str(timedelta(seconds=int((engine.target - added) / (added / elapsed)))) if added > 0 else "..."
-
+        
         text = (f"🚀 **ULTRA TURBO ACTIVATED**\n"
                 f"━━━━━━━━━━━━━━━\n"
-                f"📊 Progress: [{bar}] {prog}%\n"
-                f"✅Views: `{engine.current_views}` | 🎯Target: `{engine.start_views + engine.target}`\n"
-                f"⚡Speed: `{speed} views/min`\n"
-                f"🕒Rem: `{rem_time}`\n"
-                f"━━━━━━━━━━━━━━━\n"
-                f"🛠 Success Logs: {engine.success}")
+                f"📈 Views: `{engine.current_views}`\n"
+                f"🎯 Target: `{engine.start_views + engine.target}`\n"
+                f"⚡ Speed: `{speed} v/min` | ✅ Success: `{engine.success}`\n"
+                f"📡 Pool: `{len(engine.proxies)}` \n"
+                f"━━━━━━━━━━━━━━━")
         try: await msg.edit_text(text, parse_mode="Markdown")
         except: pass
         
         await engine.scrape_all()
-        # ከፍተኛ የፕሮክሲ ፍሰት
+        # ፕሮክሲዎቹን በፍጥነት መርጨት
         tasks = [engine.hit(pt, p) for pt, p in engine.proxies[:3000]]
-        await asyncio.gather(*tasks)
+        if tasks: await asyncio.gather(*tasks)
         await asyncio.sleep(1)
 
-async def add(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if len(context.args) < 3: return await update.message.reply_text("`/add channel post_id target` ይላኩ")
+async def add(update, context):
+    if len(context.args) < 3: return
     engine.channel, engine.post_id, engine.target = context.args[0].replace("@",""), int(context.args[1]), int(context.args[2])
     engine.is_running, engine.success, engine.start_time = True, 0, time.time()
     engine.start_views = await engine.get_views()
-    msg = await update.message.reply_text("🔥 ፍጥነት እየጨመረ ነው...")
+    msg = await update.message.reply_text("🔥 ስራ ተጀመረ...")
     context.application.create_task(work(msg))
 
-async def handle_msg(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    txt = update.message.text
+async def handle_msg(update, context):
+    txt = update.message.text.strip()
     if txt.startswith("http"):
         engine.custom_urls.append(txt)
-        await update.message.reply_text("✅ አዲስ API URL ተጨምሯል!")
+        await update.message.reply_text("✅ API URL ተጨምሯል!")
     else:
         found = re.findall(r"\d{1,3}(?:\.\d{1,3}){3}(?::\d{1,5})?", txt)
         if found:
             engine.custom_ips.extend([('socks5', p) for p in found])
-            await update.message.reply_text(f"✅ {len(found)} ፕሮክሲዎች ተቀብያለሁ!")
-
-async def stop(update, context):
-    engine.is_running = False
-    await update.message.reply_text("🛑 ስራው ተቋርጧል!")
+            await update.message.reply_text(f"✅ {len(found)} IPs ተቀብያለሁ!")
 
 if __name__ == "__main__":
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("add", add))
-    app.add_handler(CommandHandler("stop", stop))
+    app.add_handler(CommandHandler("stop", lambda u,c: setattr(engine, 'is_running', False)))
+    app.add_handler(CommandHandler("reset", lambda u,c: (engine.proxies.clear(), engine.custom_urls.clear(), engine.custom_ips.clear())))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_msg))
     app.run_polling()
