@@ -8,7 +8,7 @@ from aiohttp_socks import ProxyConnector
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
-BOT_TOKEN = "YOUR_BOT_TOKEN_HERE"
+BOT_TOKEN = "8759135008:AAFc5a-Ek1RrtmAwd7vWK04kdyt21TNgE4I"
 
 # Enhanced proxy sources with redundancy and fallbacks
 SOURCES = [
