@@ -1,12 +1,18 @@
-import asyncio, aiohttp, re, random, time
+import asyncio
+import aiohttp
+import re
+import random
+import time
+import logging
 from aiohttp_socks import ProxyConnector
 from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram.error import RetryAfter
+from telegram.ext import Application, CommandHandler, ContextTypes
 
 # --- CONFIG ---
-BOT_TOKEN = "8254387734:AAGR0IdVPqIrIQjETI4yZIRYhSgNnLBg6uA"
+BOT_TOKEN = "8254387734:AAGR0IdVPqIrIQjETI4yZIRYhSgNnLBg6uA" 
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
-# አንተ የሰጠኸኝ 30+ የፕሮክሲ ምንጮች
 PROXY_SOURCES = [
     "https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/socks5.txt",
     "https://raw.githubusercontent.com/Thordata/awesome-free-proxy-list/main/proxies/socks5.txt",
@@ -47,27 +53,28 @@ class ViewEngine:
         self.success, self.start_views, self.current_views = 0, 0, 0
         self.start_time = None
         self.proxies = []
-        self.sem = asyncio.Semaphore(1500) # ለተሻለ ፍጥነት የተመጣጠነ
+        # Increased Semaphore for high speed, but kept at 1200 so your OS doesn't crash
+        self.sem = asyncio.Semaphore(1200) 
 
     async def get_views(self):
         try:
             async with aiohttp.ClientSession() as s:
-                async with s.get(f"https://t.me/{self.channel}/{self.post_id}?embed=1", timeout=10) as r:
+                async with s.get(f"https://t.me/{self.channel}/{self.post_id}?embed=1", timeout=8) as r:
                     html = await r.text()
                     m = re.search(r'class="tgme_widget_message_views">([0-9\.]+[KkMm]?)', html)
                     if m:
                         v = m.group(1).upper().replace('K', '000').replace('M', '000000').replace('.', '')
                         return int(''.join(filter(str.isdigit, v)))
-        except: return 0
+        except Exception:
+            return 0
         return 0
 
     async def scrape_all(self):
-        """ሁሉንም ምንጮች በአንዴ ሰብስቦ ዳታውን ማጥራት"""
         temp = []
         async with aiohttp.ClientSession() as s:
             for url in PROXY_SOURCES:
                 try:
-                    async with s.get(url, timeout=12) as r:
+                    async with s.get(url, timeout=8) as r:
                         if "geonode" in url:
                             data = await r.json()
                             for p in data.get('data', []):
@@ -76,17 +83,16 @@ class ViewEngine:
                             text = await r.text()
                             found = re.findall(r"\d{1,3}(?:\.\d{1,3}){3}(?::\d{1,5})?", text)
                             temp.extend([('socks5', p) for p in found])
-                except: pass
-        self.proxies = list(set(temp)) # Duplicates ያስወግዳል
+                except: 
+                    continue
+        self.proxies = list(set(temp))
         random.shuffle(self.proxies)
 
     async def hit(self, pt, p):
         async with self.sem:
             if not self.is_running: return
             try:
-                # እውነተኛ ብሮውዘር እንዲመስል በየጥያቄው መለያ መቀየር
                 ua = f"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{random.randint(110, 124)}.0.0.0 Safari/537.36"
-                
                 h = {
                     'User-Agent': ua,
                     'X-Requested-With': 'XMLHttpRequest',
@@ -95,23 +101,27 @@ class ViewEngine:
                 }
                 
                 conn = ProxyConnector.from_url(f"{pt}://{p}")
-                async with aiohttp.ClientSession(connector=conn, timeout=aiohttp.ClientTimeout(total=8, connect=4)) as s:
-                    # 1. መጀመሪያ ቶከኑን (View Token) መፈለግ
+                # Fast timeouts to quickly skip dead proxies and move to the next one
+                async with aiohttp.ClientSession(connector=conn, timeout=aiohttp.ClientTimeout(total=8, connect=3)) as s:
                     async with s.get(f"https://t.me/{self.channel}/{self.post_id}?embed=1", headers=h) as r:
                         res = await r.text()
                         token = re.search(r'data-view="([^"]+)"', res)
                         
                         if token:
-                            # 2. ቪውውን ለማስቆጠር የሚደረግ ፖስት (ከትንሽ እረፍት ጋር)
-                            await asyncio.sleep(random.uniform(0.1, 0.8))
+                            # Minimal delay for maximum speed
+                            await asyncio.sleep(0.1)
                             async with s.post(f"https://t.me/v/?views={token.group(1)}", headers=h) as vr:
                                 if "true" in await vr.text():
                                     self.success += 1
-            except: pass
+            except Exception:
+                pass
 
 engine = ViewEngine()
 
 async def work(msg):
+    last_edit_time = 0
+    last_status = ""
+    
     while engine.is_running:
         v = await engine.get_views()
         if v > 0: engine.current_views = v
@@ -120,28 +130,42 @@ async def work(msg):
         elapsed = time.time() - engine.start_time
         speed = int(added / (elapsed / 60)) if elapsed > 0 else 0
         
-        status = (f"🚀 **ULTRA TURBO ACTIVATED**\n"
+        status = (f"🚀 **MAXIMUM OVERDRIVE**\n"
                   f"━━━━━━━━━━━━━━━\n"
                   f"📈 Views: `{engine.current_views}`\n"
                   f"✅ Success: `{engine.success}`\n"
                   f"⚡ Speed: `{speed} v/min`\n"
                   f"📡 Pool: `{len(engine.proxies)}` \n"
                   f"━━━━━━━━━━━━━━━")
-        try: await msg.edit_text(status, parse_mode="Markdown")
-        except: pass
+        
+        # We MUST keep this 5-second buffer or Telegram will ban your bot token for flooding
+        current_time = time.time()
+        if (current_time - last_edit_time) > 5 and status != last_status:
+            try: 
+                await msg.edit_text(status, parse_mode="Markdown")
+                last_edit_time = current_time
+                last_status = status
+            except RetryAfter as e:
+                await asyncio.sleep(e.retry_after)
+            except Exception:
+                pass
 
         if engine.current_views >= (engine.start_views + engine.target):
             engine.is_running = False
-            await msg.edit_text(f"✅ ተጠናቋል!\nViews: {engine.current_views}")
+            try: await msg.edit_text(f"✅ ተጠናቋል! (Finished)\nViews: {engine.current_views}")
+            except: pass
             break
 
         await engine.scrape_all()
-        # ፕሮክሲዎቹን በፍጥነት መርጨት
-        tasks = [engine.hit(pt, p) for pt, p in engine.proxies[:2500]]
+        
+        # Massive batch sizes
+        tasks = [engine.hit(pt, p) for pt, p in engine.proxies[:2500]] 
         if tasks: await asyncio.gather(*tasks)
+        
+        # Only a 1-second pause between entire batches
         await asyncio.sleep(1)
 
-async def add(update, context):
+async def add(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(context.args) < 3:
         return await update.message.reply_text("አጠቃቀም: `/add channel post_id target`")
     
@@ -149,7 +173,7 @@ async def add(update, context):
     engine.is_running, engine.success, engine.start_time = True, 0, time.time()
     engine.start_views = await engine.get_views()
     
-    msg = await update.message.reply_text("🔥 በ 30+ ትኩስ ምንጮች ስራ ተጀመረ...")
+    msg = await update.message.reply_text("🔥 Maximum Speed Initiated...")
     context.application.create_task(work(msg))
 
 if __name__ == "__main__":
