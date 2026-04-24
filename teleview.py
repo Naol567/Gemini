@@ -50,13 +50,13 @@ class ViewEngine:
         self.success, self.start_views, self.current_views = 0, 0, 0
         self.start_time = None
         self.proxies = []
-        # 800 is the sweet spot. High enough for speed, low enough not to crash your PC's network adapter.
         self.sem = asyncio.Semaphore(800) 
 
     async def get_views(self):
         try:
+            # We also add ssl=False here just in case your local machine is having certificate issues
             async with aiohttp.ClientSession() as s:
-                async with s.get(f"https://t.me/{self.channel}/{self.post_id}?embed=1", timeout=5) as r:
+                async with s.get(f"https://t.me/{self.channel}/{self.post_id}?embed=1", timeout=5, ssl=False) as r:
                     html = await r.text()
                     m = re.search(r'class="tgme_widget_message_views">([0-9\.]+[KkMm]?)', html)
                     if m:
@@ -71,7 +71,7 @@ class ViewEngine:
         async with aiohttp.ClientSession() as s:
             for url in PROXY_SOURCES:
                 try:
-                    async with s.get(url, timeout=6) as r:
+                    async with s.get(url, timeout=6, ssl=False) as r:
                         text = await r.text()
                         found = re.findall(r"\d{1,3}(?:\.\d{1,3}){3}(?::\d{1,5})?", text)
                         temp.extend([('socks5', p) for p in found])
@@ -93,19 +93,20 @@ class ViewEngine:
                     'Connection': 'keep-alive'
                 }
                 
+                # Setup the SOCKS5 proxy connector
                 conn = ProxyConnector.from_url(f"{pt}://{p}")
+                timeout = aiohttp.ClientTimeout(total=8, connect=3)
                 
-                # RUTHLESS TIMEOUTS: If the proxy doesn't connect in 2 seconds, DROP IT immediately.
-                timeout = aiohttp.ClientTimeout(total=6, connect=2)
-                
+                # The ClientSession will AUTOMATICALLY handle cookies between requests now
                 async with aiohttp.ClientSession(connector=conn, timeout=timeout) as s:
-                    async with s.get(f"https://t.me/{self.channel}/{self.post_id}?embed=1", headers=h) as r:
+                    # ssl=False prevents cheap proxies from crashing the request due to bad certificates
+                    async with s.get(f"https://t.me/{self.channel}/{self.post_id}?embed=1", headers=h, ssl=False) as r:
                         res = await r.text()
                         token = re.search(r'data-view="([^"]+)"', res)
                         
                         if token:
-                            # CRITICAL: We pass `cookies=s.cookie_jar` to ensure Telegram sees us as a valid user
-                            async with s.post(f"https://t.me/v/?views={token.group(1)}", headers=h, cookies=s.cookie_jar) as vr:
+                            # Send the POST request (the session automatically attaches the cookies from the GET request)
+                            async with s.post(f"https://t.me/v/?views={token.group(1)}", headers=h, ssl=False) as vr:
                                 if "true" in await vr.text():
                                     self.success += 1
             except: 
@@ -125,7 +126,7 @@ async def work(msg):
         elapsed = time.time() - engine.start_time
         speed = int(added / (elapsed / 60)) if elapsed > 0 else 0
         
-        status = (f"🚀 **FAST & COOKIE-AWARE MODE**\n"
+        status = (f"🚀 **FIXED PROXY ENGINE**\n"
                   f"━━━━━━━━━━━━━━━\n"
                   f"📈 Views: `{engine.current_views}`\n"
                   f"✅ Success Hits: `{engine.success}`\n"
@@ -152,11 +153,10 @@ async def work(msg):
 
         await engine.scrape_all()
         
-        # Pull 2000 proxies at a time, rely on the 2-second timeout to burn through them fast
         tasks = [engine.hit(pt, p) for pt, p in engine.proxies[:2000]] 
         if tasks: await asyncio.gather(*tasks)
         
-        await asyncio.sleep(0.5) # Almost zero delay between loops
+        await asyncio.sleep(0.5)
 
 async def add(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(context.args) < 3:
@@ -166,7 +166,7 @@ async def add(update: Update, context: ContextTypes.DEFAULT_TYPE):
     engine.is_running, engine.success, engine.start_time = True, 0, time.time()
     engine.start_views = await engine.get_views()
     
-    msg = await update.message.reply_text("🔥 High Speed + Cookie Verification Started...")
+    msg = await update.message.reply_text("🔥 System fixed. Sending traffic...")
     context.application.create_task(work(msg))
 
 if __name__ == "__main__":
